@@ -126,7 +126,7 @@ export default function Register() {
                     ) : (
                         <>
                             <label>Verification code
-                                <inpu
+                                <input
                                     inputMode="numeric"
                                     autoComplete="one-time-code"
                                     pattern="[0-9]{6}"
@@ -145,7 +145,7 @@ export default function Register() {
                 <form onSubmit={handleSubmit} noValidate>
                     {error && <p className="error">{error}</p>}
                     <label>Email
-                        <inpu
+                        <input
                             type="text"
                             value={form.email}
                             onChange={update('email')}
@@ -154,7 +154,7 @@ export default function Register() {
                         {liveErrors.email && <span className="field-error">{liveErrors.email}</span>}
                     </label>
                     <label>Username
-                        <inpu
+                        <input
                             value={form.username}
                             onChange={update('username')}
                         />

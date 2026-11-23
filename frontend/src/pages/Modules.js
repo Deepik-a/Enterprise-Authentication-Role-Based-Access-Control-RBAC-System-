@@ -69,7 +69,7 @@ export default function Modules() {
             <h1>Modules</h1>
             {hasPermission('module_management_create') && (
                 <form onSubmit={createModule} noValidate style={{ marginBottom: '1rem' }}>
-                    <inpu
+                    <input
                         placeholder="Module Name"
                         value={form.name}
                         onChange={e => setForm({ ...form, name: e.target.value })}

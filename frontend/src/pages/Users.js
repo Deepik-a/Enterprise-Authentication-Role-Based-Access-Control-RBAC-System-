@@ -224,7 +224,7 @@ export default function Users() {
 
             <div style={{ marginBottom: 15 }}>
                 <form onSubmit={handleSearch} style={{ display: 'inline' }}>
-                    <inpu
+                    <input
                         placeholder="Search email, username, name..."
                         value={searchTerm}
                         onChange={e => setSearchTerm(e.target.value)}
@@ -278,7 +278,7 @@ export default function Users() {
                     {!awaitingOtp ? <form onSubmit={handleCreateUser} noValidate>
                         <div>
                             <label>Email: </label>
-                            <inpu
+                            <input
                                 type="text"
                                 value={newUser.email}
                                 onChange={e => setNewUser({ ...newUser, email: e.target.value })}
@@ -287,7 +287,7 @@ export default function Users() {
                         </div>
                         <div>
                             <label>Username: </label>
-                            <inpu
+                            <input
                                 value={newUser.username}
                                 onChange={e => setNewUser({ ...newUser, username: e.target.value })}
                             />
@@ -304,7 +304,7 @@ export default function Users() {
                         <p><strong>Assign Initial Roles:</strong></p>
                         {allRoles.filter(r => r.code !== 'super_admin').map(r => (
                             <label key={r.id} style={{ display: 'block' }}>
-                                <inpu
+                                <input
                                     type="checkbox"
                                     checked={newUser.role_ids.includes(r.id)}
                                     onChange={() => {
@@ -360,7 +360,7 @@ export default function Users() {
                     <form onSubmit={handleSaveEdit} noValidate>
                         <div>
                             <label>Username: </label>
-                            <inpu
+                            <input
                                 value={editUser.username}
                                 onChange={e => setEditUser({ ...editUser, username: e.target.value })}
                             />
@@ -384,7 +384,7 @@ export default function Users() {
                     ) : (
                         allRoles.filter(r => r.code !== 'super_admin').map(r => (
                             <label key={r.id} style={{ display: 'block', marginBottom: 5 }}>
-                                <inpu
+                                <input
                                     type="checkbox"
                                     checked={selectedRoleIds.includes(r.id)}
                                     onChange={() => toggleRoleId(r.id)}

@@ -130,7 +130,7 @@ export default function Roles() {
 
             {hasPermission('role_management_create') && (
                 <form onSubmit={createRole} noValidate style={{ marginBottom: 15 }}>
-                    <inpu
+                    <input
                         value={newRoleName}
                         onChange={e => setNewRoleName(e.target.value)}
                         placeholder="New role name"
@@ -146,7 +146,7 @@ export default function Roles() {
                     <h3>Edit Role: {editRole.name}</h3>
                     <div>
                         <label>Name: </label>
-                        <inpu
+                        <input
                             value={editRole.name}
                             onChange={e => setEditRole({ ...editRole, name: e.target.value })}
                             aria-label="Role name"
@@ -155,7 +155,7 @@ export default function Roles() {
                     </div>
                     <div>
                         <label>
-                            <inpu
+                            <input
                                 type="checkbox"
                                 checked={editRole.is_active}
                                 disabled={editRole.code === 'super_admin'}
@@ -174,7 +174,7 @@ export default function Roles() {
                     <h3>Assign Permissions to Role: {selectedRole.name}</h3>
                     {allPermissions.map(p => (
                         <label key={p.id} style={{ display: 'block' }}>
-                            <inpu
+                            <input
                                 type="checkbox"
                                 checked={selectedPermIds.includes(p.id)}
                                 onChange={() => togglePerm(p.id)}

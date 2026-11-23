@@ -149,7 +149,7 @@ export default function Permissions() {
 
           <div style={{ marginTop: 8 }}>
             <label>Action (e.g. view, create, edit, delete, export): </label>
-            <inpu
+            <input
               placeholder="e.g. view, create, edit"
               value={newPerm.action}
               onChange={e => handleActionChange(e.target.value)}
@@ -159,7 +159,7 @@ export default function Permissions() {
 
           <div style={{ marginTop: 8 }}>
             <label>Codename: </label>
-            <inpu
+            <input
               placeholder="e.g. dashboard_view"
               value={newPerm.codename}
               onChange={e => setNewPerm({ ...newPerm, codename: e.target.value })}
@@ -196,7 +196,7 @@ export default function Permissions() {
 
 
       <div style={{ marginBottom: 15 }}>
-        <inpu
+        <input
           placeholder="Search codename or action..."
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
