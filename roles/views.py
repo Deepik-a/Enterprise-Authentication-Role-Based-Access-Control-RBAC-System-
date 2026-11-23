@@ -3,6 +3,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
+from django.db import transaction
 
 from accounts.permissions import HasModulePermission
 from accounts.rbac import check_permission_grant, get_data_scope, get_permission_codes, is_super_admin
@@ -180,10 +181,25 @@ class ModuleViewSet(AuditedModelViewSet):
     permission_map = crud_map('module_management')
 
     def perform_update(self, serializer):
-        if serializer.instance.is_system and 'slug' in serializer.validated_data \
-                and serializer.validated_data['slug'] != serializer.instance.slug:
+        module = serializer.instance
+        old_slug = module.slug
+        new_slug = serializer.validated_data.get('slug', old_slug)
+        if module.is_system and new_slug != old_slug:
             raise PermissionDenied("The slug of a system module cannot be changed.")
-        super().perform_update(serializer)
+        renamed_permissions = []
+        if old_slug and new_slug != old_slug:
+            for permission in module.permissions.all():
+                if permission.codename == f'{old_slug}_{permission.action}':
+                    renamed_permissions.append((permission, f'{new_slug}_{permission.action}'))
+            new_codenames = [codename for _, codename in renamed_permissions]
+            if Permission.objects.filter(codename__in=new_codenames).exclude(module=module).exists():
+                raise ValidationError({'slug': 'The code name conflicts with an existing permission code.'})
+        with transaction.atomic():
+            super().perform_update(serializer)
+            for permission, codename in renamed_permissions:
+                permission.codename = codename
+            if renamed_permissions:
+                Permission.objects.bulk_update([permission for permission, _ in renamed_permissions], ['codename'])
 
     def perform_destroy(self, instance):
         if instance.is_system:

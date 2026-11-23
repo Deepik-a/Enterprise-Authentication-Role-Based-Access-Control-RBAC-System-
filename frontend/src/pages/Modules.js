@@ -1,142 +1,141 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import api, { errorMessage } from '../api';
 import { useAuth } from '../AuthContext';
 import { useSweetAlert } from '../components/SweetAlert';
 
+const CODE_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
+
 export default function Modules() {
     const [modules, setModules] = useState([]);
-    const [form, setForm] = useState({ name: '', slug: '', route: '', order: 100 });
+    const [form, setForm] = useState({ name: '', codeName: '' });
     const [editModule, setEditModule] = useState(null);
     const { hasPermission } = useAuth();
     const { alert, confirm } = useSweetAlert();
-    const formError = !form.name.trim() ? 'Module name is required.' : '';
-    const editNameError = editModule && !editModule.name.trim() ? 'Module name is required.' : '';
-    const orderError = (value) => /^\d+$/.test(String(value)) ? '' : 'Menu order must be a non-negative whole number.';
-    const routeError = (value) => !value || value.startsWith('/') ? '' : 'Route must start with /.';
 
-    const fetchModules = async () => {
+    const fetchModules = useCallback(async () => {
         try {
-            const res = await api.get('modules/');
-            setModules(res.data.results || res.data);
+            const response = await api.get('modules/');
+            setModules(response.data.results || response.data);
         } catch (err) {
-            console.error('Failed to fetch modules', err);
+            await alert('Could not load modules', errorMessage(err, 'Failed to fetch modules'));
         }
-    };
+    }, [alert]);
 
     useEffect(() => {
         fetchModules();
-    }, []);
+    }, [fetchModules]);
 
-    const createModule = async (e) => {
-        e.preventDefault();
+    const validate = (value, currentId = null) => {
+        const errors = {};
+        if (!value.name.trim()) errors.name = 'Module name is required.';
+        const codeName = (value.codeName ?? value.slug ?? '').trim();
+        if (!codeName) errors.codeName = 'Code name is required.';
+        else if (!CODE_NAME_PATTERN.test(codeName)) errors.codeName = 'Use lowercase letters, numbers, and underscores; start with a letter.';
+        else if (modules.some(module => module.id !== currentId && module.slug === codeName)) errors.codeName = 'This code name is already in use.';
+        return errors;
+    };
+
+    const createErrors = validate(form);
+    const editErrors = editModule ? validate(editModule, editModule.id) : {};
+
+    const createModule = async (event) => {
+        event.preventDefault();
+        if (Object.keys(createErrors).length) return;
         try {
-            await api.post('modules/', form);
-            setForm({ name: '', slug: '', route: '', order: 100 });
-            fetchModules();
+            await api.post('modules/', { name: form.name.trim(), slug: form.codeName.trim() });
+            setForm({ name: '', codeName: '' });
+            await fetchModules();
         } catch (err) {
             await alert('Could not create module', errorMessage(err, 'Failed to create module'));
         }
     };
 
-    const deleteModule = async (id) => {
-        if (!await confirm('Delete module?', 'Are you sure you want to delete this module?')) return;
-        try {
-            await api.delete(`modules/${id}/`);
-            fetchModules();
-        } catch (err) {
-            await alert('Could not delete module', errorMessage(err, 'Failed to delete module'));
-        }
-    };
-
-    const saveEdit = async (e) => {
-        e.preventDefault();
+    const saveEdit = async (event) => {
+        event.preventDefault();
+        if (Object.keys(editErrors).length) return;
         try {
             await api.patch(`modules/${editModule.id}/`, {
-                name: editModule.name,
-                slug: editModule.slug,
-                route: editModule.route,
-                order: Number(editModule.order),
+                name: editModule.name.trim(),
+                slug: editModule.slug.trim(),
             });
             setEditModule(null);
-            fetchModules();
+            await fetchModules();
         } catch (err) {
             await alert('Could not update module', errorMessage(err, 'Failed to update module'));
         }
     };
 
+    const deleteModule = async (module) => {
+        if (module.is_system) return;
+        if (!await confirm('Delete module?', `Delete ${module.name} and its permissions?`)) return;
+        try {
+            await api.delete(`modules/${module.id}/`);
+            await fetchModules();
+        } catch (err) {
+            await alert('Could not delete module', errorMessage(err, 'Failed to delete module'));
+        }
+    };
+
     return (
         <div>
-            <h1>Modules</h1>
+            <h1>Module Management</h1>
             {hasPermission('module_management_create') && (
-                <form onSubmit={createModule} noValidate style={{ marginBottom: '1rem' }}>
-                    <input
-                        placeholder="Module Name"
-                        value={form.name}
-                        onChange={e => setForm({ ...form, name: e.target.value })}
-                    />
-                    {form.name && formError && <span className="field-error">{formError}</span>}
-                    <input placeholder="Slug (optional)" value={form.slug}
-                        onChange={e => setForm({ ...form, slug: e.target.value })} />
-                    {form.slug && !/^[a-z0-9_]+$/i.test(form.slug) && <span className="field-error">Slug can contain letters, numbers, and underscores.</span>}
-                    <input placeholder="Route (e.g. /reports)" value={form.route}
-                        onChange={e => setForm({ ...form, route: e.target.value })} />
-                    {routeError(form.route) && <span className="field-error">{routeError(form.route)}</span>}
-                    <input type="text" inputMode="numeric" placeholder="Menu order" value={form.order}
-                        onChange={e => setForm({ ...form, order: e.target.value })} />
-                    {form.order !== '' && orderError(form.order) && <span className="field-error">{orderError(form.order)}</span>}
-                    <button type="submit" disabled={!!formError || (!!form.slug && !/^[a-z0-9_]+$/i.test(form.slug)) || !!routeError(form.route) || !!orderError(form.order)}>Create Module</button>
+                <form className="module-form" onSubmit={createModule} noValidate>
+                    <label>Module Name
+                        <input value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} />
+                        {createErrors.name && <span className="field-error">{createErrors.name}</span>}
+                    </label>
+                    <label>Code Name
+                        <input value={form.codeName} onChange={event => setForm({ ...form, codeName: event.target.value })} />
+                        {createErrors.codeName && <span className="field-error">{createErrors.codeName}</span>}
+                    </label>
+                    <button className="btn" type="submit" disabled={Object.keys(createErrors).length > 0}>Add Module</button>
                 </form>
             )}
 
-            <table border="1">
+            <table>
                 <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Name</th>
-                        <th>Actions</th>
-                    </tr>
+                    <tr><th>ID</th><th>Module Name</th><th>Code Name</th><th>Actions</th></tr>
                 </thead>
                 <tbody>
-                    {modules.map(m => (
-                        <tr key={m.id}>
-                            <td>{m.id}</td>
+                    {modules.map(module => (
+                        <tr key={module.id}>
+                            <td>{module.id}</td>
                             <td>
-                                {editModule?.id === m.id ? (
-                                    <form onSubmit={saveEdit} noValidate>
-                                        <input value={editModule.name}
-                                            onChange={e => setEditModule({ ...editModule, name: e.target.value })} />
-                                        {editNameError && <span className="field-error">{editNameError}</span>}
-                                        <input value={editModule.slug || ''} disabled={m.is_system}
-                                            onChange={e => setEditModule({ ...editModule, slug: e.target.value })} />
-                                        {editModule.slug && !/^[a-z0-9_]+$/i.test(editModule.slug) && <span className="field-error">Slug can contain letters, numbers, and underscores.</span>}
-                                        <input value={editModule.route || ''} placeholder="Route"
-                                            onChange={e => setEditModule({ ...editModule, route: e.target.value })} />
-                                        {routeError(editModule.route || '') && <span className="field-error">{routeError(editModule.route || '')}</span>}
-                                        <input type="text" inputMode="numeric" value={editModule.order}
-                                            onChange={e => setEditModule({ ...editModule, order: e.target.value })} />
-                                        {editModule.order !== '' && orderError(editModule.order) && <span className="field-error">{orderError(editModule.order)}</span>}
-                                        <button type="submit" disabled={!!editNameError || (!!editModule.slug && !/^[a-z0-9_]+$/i.test(editModule.slug)) || !!routeError(editModule.route || '') || !!orderError(editModule.order)}>Save</button>
-                                        <button type="button" onClick={() => setEditModule(null)}>Cancel</button>
-                                    </form>
-                                ) : (
-                                    <>{m.name} <small>({m.slug}, {m.route || 'no route'})</small></>
-                                )}
+                                {editModule?.id === module.id ? (
+                                    <label className="module-edit-field">Module Name
+                                        <input value={editModule.name} onChange={event => setEditModule({ ...editModule, name: event.target.value })} />
+                                        {editErrors.name && <span className="field-error">{editErrors.name}</span>}
+                                    </label>
+                                ) : module.name}
                             </td>
                             <td>
-                                {editModule?.id !== m.id && (
+                                {editModule?.id === module.id ? (
+                                    <label className="module-edit-field">Code Name
+                                        <input value={editModule.slug || ''} disabled={module.is_system}
+                                            onChange={event => setEditModule({ ...editModule, slug: event.target.value })} />
+                                        {editErrors.codeName && <span className="field-error">{editErrors.codeName}</span>}
+                                    </label>
+                                ) : module.slug || '—'}
+                            </td>
+                            <td className="module-actions">
+                                {editModule?.id === module.id ? (
                                     <>
-                                        {hasPermission('module_management_edit') && (
-                                            <button onClick={() => setEditModule({ ...m })}>Edit</button>
-                                        )}
-                                        {hasPermission('module_management_delete') && !m.is_system && (
-                                            <button onClick={() => deleteModule(m.id)}>Delete</button>
-                                        )}
-                                        {m.is_system && <span>System protected</span>}
+                                        <button className="btn" onClick={saveEdit} disabled={Object.keys(editErrors).length > 0}>Save</button>
+                                        <button type="button" onClick={() => setEditModule(null)}>Cancel</button>
+                                    </>
+                                ) : (
+                                    <>
+                                        {hasPermission('module_management_edit') && <button onClick={() => setEditModule({ ...module, codeName: module.slug || '' })}>Edit</button>}
+                                        {hasPermission('module_management_delete') && (module.is_system ? (
+                                            <span className="muted">System protected</span>
+                                        ) : <button className="btn-danger" onClick={() => deleteModule(module)}>Delete</button>)}
                                     </>
                                 )}
                             </td>
                         </tr>
                     ))}
+                    {modules.length === 0 && <tr><td colSpan="4">No modules found.</td></tr>}
                 </tbody>
             </table>
         </div>
