@@ -115,7 +115,8 @@ export default function Users() {
                 email: newUser.email,
                 username: newUser.username,
                 password: newUser.password,
-                role_ids: newUser.role_ids.filter(id => allRoles.find(r => r.id === id)?.code !== 'super_admin'),
+                role_ids: [...new Set(newUser.role_ids.map(Number))]
+                    .filter(id => allRoles.find(r => r.id === id)?.is_active && allRoles.find(r => r.id === id)?.code !== 'super_admin'),
             });
             setAwaitingOtp(true);
             await alert('Verification email sent', res.data.message);
@@ -304,7 +305,7 @@ export default function Users() {
                         </div>
 
                         <p><strong>Assign Initial Roles:</strong></p>
-                        {allRoles.filter(r => r.code !== 'super_admin').map(r => (
+                        {allRoles.filter(r => r.is_active && r.code !== 'super_admin').map(r => (
                             <label key={r.id} style={{ display: 'block' }}>
                                 <input
                                     type="checkbox"

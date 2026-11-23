@@ -138,7 +138,6 @@ export default function Register() {
                             </label>
                             <button className="btn" disabled={busy || otp.length !== 6}>Verify</button>
                             <button type="button" onClick={handleResend} disabled={busy}>Resend code</button>
-                            <p><button type="button" onClick={startOver}>Use different details</button></p>
                         </>
                     )}
                 </form>
@@ -164,9 +163,7 @@ export default function Register() {
                         {liveErrors.username && <span className="field-error">{liveErrors.username}</span>}
                     </label>
                     <PasswordInput label="Password" value={form.password} onChange={update('password')} autoComplete="new-password"
-                        error={form.password ? passwordPolicyError(form.password) : ''} />
-                    {fieldErrors.password && <span className="field-error">{fieldErrors.password}</span>}
-                    {liveErrors.password && <span className="field-error">{liveErrors.password}</span>}
+                        error={fieldErrors.password || liveErrors.password || (form.password ? passwordPolicyError(form.password) : '')} />
                     <p className="muted">At least 8 characters, not too common, not all numbers.</p>
                     <button className="btn" disabled={busy || !form.email || !form.username || !form.password || Object.values(liveErrors).some(Boolean)}>Register</button>
                 </form>
