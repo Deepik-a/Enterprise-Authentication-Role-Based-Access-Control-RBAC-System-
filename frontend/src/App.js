@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './AuthContext';
 import ErrorBanner from './components/ErrorBanner';
 import ProtectedRoute from './components/ProtectedRoute';
+import { SweetAlertProvider } from './components/SweetAlert';
 import Sidebar from './components/Sidebar';
 import AuditLogs from './pages/AuditLogs';
 import { Activate, ForgotPassword, ResetPassword } from './pages/AuthPages';
@@ -18,11 +19,11 @@ import Reports from './pages/Reports';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
 
-/*
- * Page component for each module slug. The *menu* is built from the modules
- * the backend returns (see Sidebar); this registry only says which React
- * component renders a module's route. Access is always `<slug>_view`.
- */
+
+
+
+
+
 const MODULE_PAGES = {
     user_management: { path: '/users', Component: Users },
     role_management: { path: '/roles', Component: Roles },
@@ -45,8 +46,8 @@ function Layout({ children }) {
 
 function Private({ children, permission }) {
     return (
-        // Login check outside the layout, permission check inside it,
-        // so the 403 page still shows the sidebar.
+
+
         <ProtectedRoute>
             <Layout>
                 <ProtectedRoute requiredPermission={permission}>{children}</ProtectedRoute>
@@ -68,6 +69,7 @@ function NotFound() {
 export default function App() {
     return (
         <AuthProvider>
+            <SweetAlertProvider>
             <BrowserRouter>
                 <ErrorBanner />
                 <Routes>
@@ -89,6 +91,7 @@ export default function App() {
                     <Route path="*" element={<NotFound />} />
                 </Routes>
             </BrowserRouter>
+            </SweetAlertProvider>
         </AuthProvider>
     );
 }

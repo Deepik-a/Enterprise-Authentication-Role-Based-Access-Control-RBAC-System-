@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import api, { errorMessage } from '../api';
 import { useAuth } from '../AuthContext';
+import { useSweetAlert } from '../components/SweetAlert';
 
 export default function Roles() {
     const [roles, setRoles] = useState([]);
@@ -11,40 +12,54 @@ export default function Roles() {
     const [selectedPermIds, setSelectedPermIds] = useState([]);
     const [viewUsersRole, setViewUsersRole] = useState(null);
     const [editRole, setEditRole] = useState(null);
-    const { hasPermission } = useAuth();
+    const { user, hasPermission, hasAnyPermission } = useAuth();
+    const { alert, confirm } = useSweetAlert();
+    const normalizedRoleName = newRoleName.trim().toLocaleLowerCase();
+    const roleNameError = !newRoleName.trim() ? 'Role name is required.' : roles.some(r => r.name.toLocaleLowerCase() === normalizedRoleName) ? 'A role with this name already exists.' : '';
+    const canViewUsers = hasPermission('user_management_view');
 
-    const fetchRoles = async () => {
+    const fetchRoles = useCallback(async () => {
         try {
             const res = await api.get('roles/');
-            setRoles(res.data.results || res.data || []);
+            const roleData = res.data.results || res.data || [];
+            setRoles(roleData);
+
+
+
+            const held = new Set(user?.permissions || []);
+            const grantable = new Map();
+            roleData.flatMap(role => role.permissions || []).forEach(permission => {
+                if (held.has(permission.codename)) grantable.set(permission.id, permission);
+            });
+            setAllPermissions([...grantable.values()]);
         } catch (err) {
             console.error('Failed to fetch roles', err);
         }
-    };
+    }, [user?.permissions]);
 
-    const fetchPermissions = async () => {
+    const fetchPermissions = useCallback(async () => {
         try {
             const res = await api.get('permissions/');
             setAllPermissions(res.data.results || res.data || []);
         } catch (err) {
-            console.error('Failed to fetch permissions', err);
+            if (err.response?.status !== 403) console.error('Failed to fetch permissions', err);
         }
-    };
+    }, []);
 
-    const fetchUsers = async () => {
+    const fetchUsers = useCallback(async () => {
         try {
             const res = await api.get('users/');
             setUsers(res.data.results || res.data || []);
         } catch (err) {
             console.error('Failed to fetch users', err);
         }
-    };
+    }, []);
 
     useEffect(() => {
         fetchRoles();
         fetchPermissions();
-        fetchUsers();
-    }, []);
+        if (canViewUsers) fetchUsers();
+    }, [canViewUsers, fetchPermissions, fetchRoles, fetchUsers]);
 
     const createRole = async (e) => {
         e.preventDefault();
@@ -53,17 +68,17 @@ export default function Roles() {
             setNewRoleName('');
             fetchRoles();
         } catch (err) {
-            alert(errorMessage(err, 'Failed to create role'));
+            await alert('Could not create role', errorMessage(err, 'Failed to create role'));
         }
     };
 
     const deleteRole = async (id) => {
-        if (!window.confirm('Are you sure you want to delete this role?')) return;
+        if (!await confirm('Delete role?', 'Are you sure you want to delete this role?')) return;
         try {
             await api.delete(`roles/${id}/`);
             fetchRoles();
         } catch (err) {
-            alert(errorMessage(err, 'Failed to delete role'));
+            await alert('Could not delete role', errorMessage(err, 'Failed to delete role'));
         }
     };
 
@@ -83,11 +98,11 @@ export default function Roles() {
             await api.post(`roles/${selectedRole.id}/assign_permissions/`, {
                 permission_ids: selectedPermIds,
             });
-            alert('Permissions updated for role');
+            await alert('Permissions updated', 'Permissions were updated for this role.');
             setSelectedRole(null);
             fetchRoles();
         } catch (err) {
-            alert(errorMessage(err, 'Failed to update permissions'));
+            await alert('Could not update permissions', errorMessage(err, 'Failed to update permissions'));
         }
     };
 
@@ -101,7 +116,7 @@ export default function Roles() {
             setEditRole(null);
             fetchRoles();
         } catch (err) {
-            alert(errorMessage(err, 'Failed to update role'));
+            await alert('Could not update role', errorMessage(err, 'Failed to update role'));
         }
     };
 
@@ -114,39 +129,42 @@ export default function Roles() {
             <h1>Role Management</h1>
 
             {hasPermission('role_management_create') && (
-                <form onSubmit={createRole} style={{ marginBottom: 15 }}>
-                    <input
+                <form onSubmit={createRole} noValidate style={{ marginBottom: 15 }}>
+                    <inpu
                         value={newRoleName}
                         onChange={e => setNewRoleName(e.target.value)}
                         placeholder="New role name"
-                        required
+                        aria-label="New role name"
                     />
-                    <button type="submit">Create Role</button>
+                    {newRoleName && roleNameError && <span className="field-error">{roleNameError}</span>}
+                    <button type="submit" disabled={!!roleNameError}>Create Role</button>
                 </form>
             )}
 
             {editRole && (
-                <form onSubmit={saveEditRole} style={{ margin: '15px 0', border: '1px solid black', padding: 10 }}>
+                <form onSubmit={saveEditRole} noValidate style={{ margin: '15px 0', border: '1px solid black', padding: 10 }}>
                     <h3>Edit Role: {editRole.name}</h3>
                     <div>
                         <label>Name: </label>
-                        <input
+                        <inpu
                             value={editRole.name}
                             onChange={e => setEditRole({ ...editRole, name: e.target.value })}
-                            required
+                            aria-label="Role name"
                         />
+                        {editRole.name.trim() && roles.some(r => r.id !== editRole.id && r.name.toLocaleLowerCase() === editRole.name.trim().toLocaleLowerCase()) && <span className="field-error">A role with this name already exists.</span>}
                     </div>
                     <div>
                         <label>
-                            <input
+                            <inpu
                                 type="checkbox"
                                 checked={editRole.is_active}
+                                disabled={editRole.code === 'super_admin'}
                                 onChange={e => setEditRole({ ...editRole, is_active: e.target.checked })}
                             />
-                            Active
+                            Active {editRole.code === 'super_admin' && '(Super Admin role cannot be deactivated)'}
                         </label>
                     </div>
-                    <button type="submit">Save</button>
+                    <button type="submit" disabled={!editRole.name.trim() || roles.some(r => r.id !== editRole.id && r.name.toLocaleLowerCase() === editRole.name.trim().toLocaleLowerCase())}>Save</button>
                     <button type="button" onClick={() => setEditRole(null)}>Cancel</button>
                 </form>
             )}
@@ -156,7 +174,7 @@ export default function Roles() {
                     <h3>Assign Permissions to Role: {selectedRole.name}</h3>
                     {allPermissions.map(p => (
                         <label key={p.id} style={{ display: 'block' }}>
-                            <input
+                            <inpu
                                 type="checkbox"
                                 checked={selectedPermIds.includes(p.id)}
                                 onChange={() => togglePerm(p.id)}
@@ -200,12 +218,17 @@ export default function Roles() {
                     {roles.map(r => (
                         <tr key={r.id}>
                             <td>{r.id}</td>
-                            <td>{r.name}</td>
+                            <td>
+                                <strong>{r.name}</strong>
+                                {r.code === 'super_admin' && <span style={{ marginLeft: 6, color: '#b00', fontSize: '0.85em' }}>(Protected)</span>}
+                            </td>
                             <td>{r.is_active ? 'Yes' : 'No'}</td>
                             <td>
-                                <button onClick={() => setViewUsersRole(r)}>
-                                    View Users ({getUsersForRole(r.name).length})
-                                </button>
+                                {canViewUsers && (
+                                    <button onClick={() => setViewUsersRole(r)}>
+                                        View Users ({getUsersForRole(r.name).length})
+                                    </button>
+                                )}
                             </td>
                             <td>
                                 {r.permissions?.length > 0
@@ -213,13 +236,13 @@ export default function Roles() {
                                     : 'No permissions'}
                             </td>
                             <td>
-                                {hasPermission('role_management_edit') && !r.is_system && (
+                                {hasAnyPermission(['role_management_edit', 'role_management_assign']) && (
                                     <>
-                                        <button onClick={() => setEditRole(r)}>Edit</button>
+                                        {hasPermission('role_management_edit') && <button onClick={() => setEditRole(r)}>Edit</button>}
                                         <button onClick={() => openAssignPermissions(r)}>Assign Permissions</button>
                                     </>
                                 )}
-                                {hasPermission('role_management_delete') && !r.is_system && (
+                                {hasPermission('role_management_delete') && r.code !== 'super_admin' && (
                                     <button onClick={() => deleteRole(r.id)}>Delete</button>
                                 )}
                             </td>

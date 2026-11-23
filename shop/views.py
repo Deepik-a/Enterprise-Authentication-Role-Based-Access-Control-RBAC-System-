@@ -40,10 +40,10 @@ class ProductViewSet(ModelViewSet):
 
 
 class OrderViewSet(ModelViewSet):
-    queryset = Order.objects.select_related('customer', 'product')
+    queryset = Order.objects.select_related('customer', 'product').order_by('id')
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated, HasModulePermission]
-    # There is no orders_delete permission: orders are cancelled, not deleted.
+
     permission_map = {
         'list': 'orders_view',
         'retrieve': 'orders_view',
@@ -68,7 +68,7 @@ class OrderViewSet(ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
-        order = self.get_object()  # scoped: someone else's order is a 404
+        order = self.get_object()
         if order.status != Order.STATUS_PENDING:
             return Response({"error": "Only pending orders can be cancelled."}, status=400)
         order.status = Order.STATUS_CANCELLED

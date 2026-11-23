@@ -36,7 +36,8 @@ python manage.py runserver
 
 - API: http://localhost:8000/api/
 - Swagger UI: http://localhost:8000/api/docs/ (raw schema: `/api/schema/`, also saved in [docs/openapi.yaml](docs/openapi.yaml))
-- Emails (activation and password-reset links) are printed to the `runserver` terminal by the console email backend.
+- Emails (registration and password-reset codes) are printed to the `runserver` terminal by the console email backend.
+- Pending registrations are stored in Redis (`REDIS_URL`) until the OTP is verified. Run Redis locally before signing up.
 
 PostgreSQL is the default database. For a quick local run without PostgreSQL, set `DB_ENGINE=sqlite` in `.env`.
 
@@ -74,10 +75,11 @@ sequenceDiagram
     participant M as Email
 
     B->>A: POST /auth/register/ {email, username, password}
-    A->>A: validate password, create user (inactive), role = Customer
-    A->>M: activation link (single-use token, 48 h)
-    B->>A: POST /auth/activate/ {token}
-    A-->>B: account active
+    A->>A: validate password, store pending signup in Redis (no User row)
+    A->>M: 6-digit OTP (expires in 10 min)
+    B->>A: POST /auth/verify-otp/ {email, otp}
+    A->>A: create_user(), assign Customer, delete pending data
+    A-->>B: account created
 
     B->>A: POST /auth/login/ {email, password}
     A-->>B: body: {access}  +  Set-Cookie: refresh_token (httpOnly)
@@ -87,6 +89,9 @@ sequenceDiagram
     A-->>B: {access} + rotated refresh cookie (old one blacklisted)
     B->>A: POST /auth/logout/
     A-->>B: refresh token blacklisted, cookie cleared
+    B->>A: POST /auth/forgot-password/ {email}
+    A->>M: short-lived password-reset OTP
+    B->>A: POST /auth/reset-password/ {email, otp, new_password}
 ```
 
 **Tokens**
@@ -96,9 +101,11 @@ sequenceDiagram
 - Every token carries a `tv` (token version) claim. Bumping `User.token_version` instantly invalidates **all** of a user's access and refresh tokens. This happens on password change, password reset, deactivation and "log out everywhere".
 - API clients like Postman can still send `{"refresh": "..."}` in the body of `/auth/token/refresh/` and `/auth/logout/`.
 
-**Password reset:** `POST /auth/forgot-password/` always returns the same message, whether or not the email exists. The reset link is only sent by email, never in the API response. The token is random, stored only as a SHA-256 hash in the `OneTimeToken` table, expires in 1 hour, and works once. A successful reset runs Django's password validators and revokes every existing session.
+**Password reset:** `POST /auth/forgot-password/` always returns the same message, whether or not the email exists. A short-lived OTP is emailed and its HMAC is kept in the cache. `POST /auth/reset-password/` accepts `{email, otp, new_password}`; the password is saved only after the OTP is verified. A successful reset runs Django's password validators and revokes every existing session.
 
-**Rate limits:** login 5/min, register 10/hour, forgot/reset password 5/hour, activation 10/hour (per IP, configurable in `.env`).
+**Registration:** `POST /auth/register/` does not insert a user. The email, username and a password hash are stored in Redis with the OTP's HMAC until `POST /auth/verify-otp/` succeeds. A duplicate email or username (including one reserved by another pending signup) is rejected. An expired or exhausted code is deleted and the user has to register again. `POST /auth/resend-otp/` replaces the code. Older activation links still work for accounts created before this flow.
+
+**Rate limits:** login 5/min, register 10/hour, forgot/reset password 5/hour, OTP 30/hour, activation 10/hour (per IP, configurable in `.env`).
 
 ## Authorization model
 
@@ -109,12 +116,12 @@ Three layers decide every request:
 3. **Escalation guards** (`accounts/rbac.py`):
    - You can't change your own roles.
    - You can only assign roles whose permissions you already hold, and only grant permissions you hold.
-   - Only a Super Admin can grant the Super Admin role.
+   - Super Admin accounts are created only by the seed process. The API rejects creating one or assigning the Super Admin role to another account.
    - You can't edit, deactivate, delete, reset the password of, or change the roles of a user with more privileges than you.
-   - System roles (the five seeded ones) can't be renamed, edited or deleted through the API. System modules can't be deleted.
+   - Only Super Admins can manage the Super Admin role; it cannot be deleted or deactivated. Other seeded roles can be managed by an authorized administrator. System modules cannot be deleted or have their slugs changed; their existing permissions cannot be edited or deleted.
    - Super Admin is identified by the role's fixed `code`, never by its name, so renaming a role grants nothing.
 
-Role and permission changes take effect on the user's next request. No re-login is needed, because permissions are read from the database each time and not stored in the JWT.
+Role and permission changes take effect on the user's next request. The UI also refreshes the logged-in user's profile on tab focus and every 30 seconds, so changed roles appear without a re-login.
 
 **Menu:** `/api/auth/me/` returns the modules the user can view, with each module's `route` and `order`. The sidebar is built from that list, so adding a module or changing a role changes the menu without frontend changes.
 
@@ -141,7 +148,7 @@ Role and permission changes take effect on the user's next request. No re-login 
 | settings_edit | ✓ | | | | |
 | **Data scope** | all | all | team | own | own |
 
-`assign_roles` and `toggle_active` on users require `user_management_edit`. `assign_permissions` on roles requires `role_management_edit`. All of them also go through the escalation guards above.
+User role assignment is exposed with either `user_management_assign` or `user_management_edit`; activation requires `user_management_edit`. Role permission assignment accepts either `role_management_assign` or `role_management_edit`. All of them also go through the escalation guards above.
 
 ## ER diagram
 
@@ -192,7 +199,7 @@ erDiagram
     ONE_TIME_TOKEN {
         int id PK
         int user_id FK
-        string purpose "reset | activate"
+        string purpose "activate | legacy reset link"
         string token_hash UK "SHA-256"
         datetime expires_at
         datetime used_at
@@ -223,27 +230,32 @@ erDiagram
     }
 ```
 
+Pending registration details and current password-reset OTP challenges are short-lived cache entries; they are not persisted in SQL tables. The registration password is hashed before caching.
+
 ## API reference
 
 Full interactive docs are at `/api/docs/`. Summary:
 
 | Method & path | Permission | Notes |
 |---|---|---|
-| POST `/api/auth/register/` | public, throttled | creates an inactive Customer and emails an activation link |
-| POST `/api/auth/activate/` | public | `{token}` |
-| POST `/api/auth/resend-activation/` | public, throttled | `{email}` |
+| POST `/api/auth/register/` | public, throttled | stores the signup in Redis and emails an OTP; no User row yet |
+| POST `/api/auth/verify-otp/` | public, throttled | `{email, otp}` creates the Customer and deletes the pending signup |
+| POST `/api/auth/resend-otp/` | public, throttled | `{email}` replaces the OTP if the pending signup has not expired |
+| POST `/api/auth/activate/` | public | `{token}` for activation links issued by the previous flow |
+| POST `/api/auth/resend-activation/` | public, throttled | `{email}` for accounts already saved but not yet verified |
 | POST `/api/auth/login/` | public, throttled | returns `{access}` and sets the refresh cookie |
 | POST `/api/auth/token/refresh/` | refresh cookie | rotates the cookie and returns `{access}` |
 | POST `/api/auth/logout/` | logged in | blacklists **your own** refresh token |
 | POST `/api/auth/logout-all/` | logged in | revokes all your tokens |
 | GET `/api/auth/me/` | logged in | profile, roles, permissions, menu modules, data scope |
-| POST `/api/auth/forgot-password/` | public, throttled | link sent by email only |
-| POST `/api/auth/reset-password/` | public, throttled | `{token, new_password}` |
+| POST `/api/auth/forgot-password/` | public, throttled | sends a reset OTP by email |
+| POST `/api/auth/reset-password/` | public, throttled | `{email, otp, new_password}` |
 | POST `/api/auth/change-password/` | logged in | `{old_password, new_password}`; other sessions are revoked |
-| `/api/users/` CRUD | `user_management_*` | scoped by data scope |
-| POST `/api/users/{id}/assign_roles/` | `user_management_edit` | `{role_ids: []}` + escalation guards |
+| POST `/api/users/register_with_otp/` | `user_management_create` | caches account details and selected non-Super-Admin roles until the emailed OTP is verified |
+| GET/PATCH/DELETE `/api/users/{id}/` | `user_management_*` | scoped by data scope; only username can be edited |
+| POST `/api/users/{id}/assign_roles/` | `user_management_assign` or `user_management_edit` | `{role_ids: []}` + escalation guards |
 | POST `/api/users/{id}/toggle_active/` | `user_management_edit` | deactivating revokes the user's tokens |
-| `/api/roles/` CRUD | `role_management_*` | system roles are read-only |
+| `/api/roles/` CRUD | `role_management_*` | Super Admin role is protected; other built-in roles can be managed by an authorized administrator |
 | POST `/api/roles/{id}/assign_permissions/` | `role_management_edit` | `{permission_ids: []}` |
 | `/api/permissions/` CRUD | `permission_management_*` | |
 | `/api/modules/` CRUD | `module_management_*` | |
@@ -262,7 +274,7 @@ A Postman collection is in [docs/postman_collection.json](docs/postman_collectio
 - **Passwords** are hashed with PBKDF2 and checked by Django's validators on register, reset, change and admin edits. The user serializer never writes a raw password to the model.
 - **Secrets** live in `.env` (git-ignored). The app refuses to start without `DJANGO_SECRET_KEY`. `DEBUG` defaults to `False`.
 - **CORS** is limited to `CORS_ALLOWED_ORIGINS` with credentials, so only the real frontend can use the refresh cookie.
-- **CSRF:** the access token is sent in a header, so CSRF can't use it. The refresh cookie is `SameSite=Lax`, which blocks cross-site POSTs, and the refresh response can't be read cross-origin because of CORS.
+- **CSRF:** protected requests use a bearer access token in the Authorization header. Browser refresh requests use an httpOnly `SameSite=Lax` cookie and are accepted only from configured frontend origins. API clients may submit a refresh token in the request body; this requires possession of the token and does not use ambient browser cookies.
 - **Audit log:** user create/update/delete, role assignment, activation/deactivation, role/permission/module CRUD, permission assignment, and password change/reset are all recorded with actor, object and before/after values.
 
 ## Tests
@@ -271,4 +283,4 @@ A Postman collection is in [docs/postman_collection.json](docs/postman_collectio
 python manage.py test
 ```
 
-41 tests in [accounts/tests.py](accounts/tests.py), one `APITestCase` per scenario 1–12 plus audit logging. Results: [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md).
+70 Django API tests cover role authorization, CSRF origin checks, token expiration and revocation, data scope, IDOR, and privilege escalation. Seven React tests cover protected routes, backend-fed auth permissions, dynamic sidebar links, and permission-based actions. Results: [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md).

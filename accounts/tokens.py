@@ -31,8 +31,10 @@ def revoke_user_tokens(user):
 
 class VersionedJWTAuthentication(JWTAuthentication):
     def get_user(self, validated_token):
-        user = super().get_user(validated_token)  # also rejects inactive users
-        if validated_token.get(TOKEN_VERSION_CLAIM, 0) != user.token_version:
+        user = super().get_user(validated_token)
+        if not user.email_verified:
+            raise AuthenticationFailed("Email address has not been verified.", code="email_not_verified")
+        if validated_token.get(TOKEN_VERSION_CLAIM) != user.token_version:
             raise AuthenticationFailed("Token has been revoked.", code="token_revoked")
         return user
 
@@ -40,6 +42,8 @@ class VersionedJWTAuthentication(JWTAuthentication):
 class LoginSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
+        if not user.email_verified:
+            raise AuthenticationFailed("Email address has not been verified.", code="email_not_verified")
         token = super().get_token(user)
         token[TOKEN_VERSION_CLAIM] = user.token_version
         return token
@@ -47,16 +51,16 @@ class LoginSerializer(TokenObtainPairSerializer):
 
 class VersionedTokenRefreshSerializer(TokenRefreshSerializer):
     def validate(self, attrs):
-        refresh = RefreshToken(attrs["refresh"])  # raises TokenError if invalid/blacklisted
+        refresh = RefreshToken(attrs["refresh"])
         user = get_user_model().objects.filter(pk=refresh.get("user_id")).first()
-        if user is None or not user.is_active:
+        if user is None or not user.is_active or not user.email_verified:
             raise AuthenticationFailed("No active account found for the given token.", code="no_active_account")
-        if refresh.get(TOKEN_VERSION_CLAIM, 0) != user.token_version:
+        if refresh.get(TOKEN_VERSION_CLAIM) != user.token_version:
             raise AuthenticationFailed("Token has been revoked.", code="token_revoked")
         return super().validate(attrs)
 
 
-# --- refresh cookie -------------------------------------------------------
+
 
 def set_refresh_cookie(response, refresh_token):
     response.set_cookie(

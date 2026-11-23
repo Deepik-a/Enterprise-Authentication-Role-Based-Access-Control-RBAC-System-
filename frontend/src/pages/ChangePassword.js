@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { errorMessage } from '../api';
 import { useAuth } from '../AuthContext';
+import PasswordInput from '../components/PasswordInput';
 
 export default function ChangePassword() {
     const { changePassword } = useAuth();
@@ -32,17 +33,13 @@ export default function ChangePassword() {
             <h1>Change password</h1>
             {error && <p className="error">{error}</p>}
             {message && <p className="success">{message}</p>}
-            <form onSubmit={submit}>
-                <label>Current password
-                    <input type="password" required value={form.old} onChange={update('old')} />
-                </label>
-                <label>New password
-                    <input type="password" required value={form.next} onChange={update('next')} />
-                </label>
-                <label>Confirm new password
-                    <input type="password" required value={form.confirm} onChange={update('confirm')} />
-                </label>
-                <button className="btn">Change password</button>
+            <form onSubmit={submit} noValidate>
+                <PasswordInput label="Current password" value={form.old} onChange={update('old')} autoComplete="current-password" />
+                <PasswordInput label="New password" value={form.next} onChange={update('next')} autoComplete="new-password"
+                    error={form.next && form.next.length < 8 ? 'Use at least 8 characters.' : ''} />
+                <PasswordInput label="Confirm new password" value={form.confirm} onChange={update('confirm')} autoComplete="new-password"
+                    error={form.confirm && form.next !== form.confirm ? 'Passwords do not match.' : ''} />
+                <button className="btn" disabled={!form.old || form.next.length < 8 || form.next !== form.confirm}>Change password</button>
             </form>
         </div>
     );

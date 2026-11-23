@@ -9,7 +9,7 @@ export default function Dashboard() {
     const [stats, setStats] = useState({});
 
     useEffect(() => {
-        // The backend only returns the counts this user is allowed to see.
+
         api.get('dashboard/stats/')
             .then((res) => setStats(res.data))
             .catch((err) => console.error('Failed to fetch dashboard stats', err));

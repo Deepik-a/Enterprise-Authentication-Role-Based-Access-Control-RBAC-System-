@@ -1,9 +1,9 @@
-"""Seed modules, permissions, the five system roles and (optionally) demo users.
+"""Seed modules, permissions, the default roles and (optionally) demo users.
 
     python manage.py seed_data          # modules, permissions, roles
     python manage.py seed_data --demo   # + demo users, a team, products and orders
 
-Safe to run repeatedly.
+Safe to run repeatedly without overwriting administrator changes.
 """
 
 import os
@@ -15,16 +15,16 @@ from django.db import transaction
 
 from roles.models import Module, Permission, Role
 
-# name, slug (permission prefix), frontend route, sidebar order, actions
+
 MODULES = [
-    ('User Management', 'user_management', '/users', 10, ['view', 'create', 'edit', 'delete']),
-    ('Role Management', 'role_management', '/roles', 20, ['view', 'create', 'edit', 'delete']),
+    ('User Management', 'user_management', '/users', 10, ['view', 'create', 'edit', 'delete', 'assign']),
+    ('Role Management', 'role_management', '/roles', 20, ['view', 'create', 'edit', 'delete', 'assign']),
     ('Permission Management', 'permission_management', '/permissions', 30, ['view', 'create', 'edit', 'delete']),
     ('Module Management', 'module_management', '/modules', 40, ['view', 'create', 'edit', 'delete']),
-    ('Products', 'products', '/products', 50, ['view', 'create', 'edit', 'delete']),
-    ('Orders', 'orders', '/orders', 60, ['view', 'create', 'edit', 'cancel']),
+    ('Products', 'products', '/products', 50, ['view', 'create', 'edit', 'delete', 'export']),
+    ('Orders', 'orders', '/orders', 60, ['view', 'create', 'edit', 'cancel', 'export']),
     ('Reports', 'reports', '/reports', 70, ['view', 'export']),
-    ('Audit Logs', 'auditlog', '/audit-logs', 80, ['view']),
+    ('Audit Logs', 'auditlog', '/audit-logs', 80, ['view', 'export']),
     ('Settings', 'settings', '', 90, ['view', 'edit']),
 ]
 
@@ -33,34 +33,36 @@ def perms(*codes):
     return list(codes)
 
 
-# code, name, data scope, permission codenames ('*' = everything)
+
 ROLES = [
-    (Role.SUPER_ADMIN, 'Super Admin', Role.SCOPE_ALL, '*'),
-    (Role.ADMIN, 'Admin', Role.SCOPE_ALL, perms(
-        'user_management_view', 'user_management_create', 'user_management_edit', 'user_management_delete',
-        'role_management_view', 'role_management_create', 'role_management_edit', 'role_management_delete',
-        'products_view', 'products_create', 'products_edit', 'products_delete',
-        'orders_view', 'orders_create', 'orders_edit', 'orders_cancel',
+    (Role.SUPER_ADMIN, 'Super Admin', Role.SCOPE_ALL, True, '*'),
+    (Role.ADMIN, 'Admin', Role.SCOPE_ALL, False, perms(
+        'user_management_view', 'user_management_create', 'user_management_edit', 'user_management_delete', 'user_management_assign',
+        'role_management_view', 'role_management_create', 'role_management_edit', 'role_management_delete', 'role_management_assign',
+        'products_view', 'products_create', 'products_edit', 'products_delete', 'products_export',
+        'orders_view', 'orders_create', 'orders_edit', 'orders_cancel', 'orders_export',
         'reports_view', 'reports_export',
-        'auditlog_view', 'settings_view',
+        'auditlog_view', 'auditlog_export',
+        'settings_view', 'settings_edit',
     )),
-    (Role.MANAGER, 'Manager', Role.SCOPE_TEAM, perms(
+    (Role.MANAGER, 'Manager', Role.SCOPE_TEAM, False, perms(
         'user_management_view',
         'products_view',
-        'orders_view', 'orders_create', 'orders_edit', 'orders_cancel',
+        'orders_view', 'orders_create', 'orders_edit', 'orders_cancel', 'orders_export',
         'reports_view', 'reports_export',
+        'auditlog_view',
     )),
-    (Role.EMPLOYEE, 'Employee', Role.SCOPE_OWN, perms(
+    (Role.EMPLOYEE, 'Employee', Role.SCOPE_OWN, False, perms(
         'products_view', 'products_create', 'products_edit',
         'orders_view', 'orders_create',
     )),
-    (Role.CUSTOMER, 'Customer', Role.SCOPE_OWN, perms(
+    (Role.CUSTOMER, 'Customer', Role.SCOPE_OWN, False, perms(
         'products_view',
         'orders_view', 'orders_create', 'orders_cancel',
     )),
 ]
 
-# email, username, role code, manager email
+
 DEMO_USERS = [
     ('superadmin@example.com', 'superadmin', Role.SUPER_ADMIN, None),
     ('admin@example.com', 'admin', Role.ADMIN, None),
@@ -72,7 +74,7 @@ DEMO_USERS = [
 
 
 class Command(BaseCommand):
-    help = "Seed modules, permissions and roles (add --demo for demo users and data)."
+    help = "Seed modules, permissions and default roles (add --demo for demo users and data)."
 
     def add_arguments(self, parser):
         parser.add_argument('--demo', action='store_true', help='Also create demo users, products and orders.')
@@ -80,7 +82,7 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         seed_rbac()
-        self.stdout.write(self.style.SUCCESS("Modules, permissions and roles seeded."))
+        self.stdout.write(self.style.SUCCESS("Modules, permissions and roles seeded successfully."))
         if options['demo']:
             password = os.environ.get('DEMO_PASSWORD')
             if not password:
@@ -92,24 +94,72 @@ class Command(BaseCommand):
 
 
 def seed_rbac():
-    all_permissions = []
-    for name, slug, route, order, actions in MODULES:
-        module = Module.objects.filter(slug=slug).first() or Module.objects.filter(name=name).first() or Module(name=name)
-        module.name, module.slug, module.route, module.order, module.is_system = name, slug, route, order, True
-        module.save()
-        for action in actions:
-            perm, _ = Permission.objects.update_or_create(
-                module=module, action=action, defaults={'codename': f'{slug}_{action}'})
-            all_permissions.append(perm)
 
-    for code, name, scope, codes in ROLES:
-        role = Role.objects.filter(code=code).first() or Role.objects.filter(name=name).first() or Role(name=name)
-        role.name, role.code, role.data_scope, role.is_system, role.is_active = name, code, scope, True, True
-        role.save()
-        if codes == '*':
-            role.permissions.set(all_permissions)
+    for name, slug, route, order, actions in MODULES:
+        module = Module.objects.filter(slug=slug).first() or Module.objects.filter(name=name).first()
+        if not module:
+            module = Module.objects.create(
+                name=name,
+                slug=slug,
+                route=route,
+                order=order,
+                is_system=True,
+            )
         else:
-            role.permissions.set(Permission.objects.filter(codename__in=codes))
+
+            if not module.slug:
+                module.slug = slug
+                module.save(update_fields=['slug'])
+            if not module.route and route:
+                module.route = route
+                module.save(update_fields=['route'])
+
+
+        for action in actions:
+            Permission.objects.get_or_create(
+                module=module,
+                action=action,
+                defaults={'codename': f'{module.slug}_{action}'}
+            )
+
+
+    for mod in Module.objects.all():
+        for act in ['view', 'create', 'edit', 'delete']:
+            Permission.objects.get_or_create(
+                module=mod,
+                action=act,
+                defaults={'codename': f'{mod.slug}_{act}'}
+            )
+
+    all_permissions = list(Permission.objects.all())
+
+
+    for code, name, scope, is_sys, codes in ROLES:
+        role = Role.objects.filter(code=code).first() or Role.objects.filter(name=name).first()
+        if role is None:
+
+            role = Role.objects.create(
+                name=name,
+                code=code,
+                data_scope=scope,
+                is_system=is_sys,
+                is_active=True,
+            )
+            if codes == '*':
+                role.permissions.set(all_permissions)
+            else:
+                role.permissions.set(Permission.objects.filter(codename__in=codes))
+        else:
+
+
+            if role.code != code or role.is_system != is_sys:
+                role.code = code
+                role.is_system = is_sys
+                role.save(update_fields=['code', 'is_system'])
+
+
+            if role.code == Role.SUPER_ADMIN:
+                role.permissions.add(*all_permissions)
 
 
 def seed_demo(password):
@@ -124,7 +174,9 @@ def seed_demo(password):
         user.is_active = True
         user.email_verified = True
         user.save()
-        user.roles.set([Role.objects.get(code=role_code)])
+        role = Role.objects.filter(code=role_code).first()
+        if role:
+            user.roles.set([role])
         users[email] = user
     for email, _, _, manager_email in DEMO_USERS:
         users[email].manager = users.get(manager_email)

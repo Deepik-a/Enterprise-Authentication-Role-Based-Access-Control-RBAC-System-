@@ -4,7 +4,7 @@ import api, { refreshAccessToken, setAccessToken } from './api';
 const AuthContext = createContext();
 
 export function AuthProvider({ children }) {
-    const [user, setUser] = useState(null); // { email, roles, permissions, modules, ... }
+    const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
 
     const fetchMe = useCallback(async () => {
@@ -18,8 +18,8 @@ export function AuthProvider({ children }) {
         setUser(null);
     }, []);
 
-    // On page load the access token is gone (memory only); the refresh cookie
-    // silently gets a new one if the session is still valid.
+
+
     useEffect(() => {
         (async () => {
             try {
@@ -35,6 +35,22 @@ export function AuthProvider({ children }) {
         window.addEventListener('auth:logout', onLogout);
         return () => window.removeEventListener('auth:logout', onLogout);
     }, [fetchMe, clearSession]);
+
+
+
+
+    useEffect(() => {
+        if (!user) return undefined;
+        const refreshVisibleSession = () => {
+            if (document.visibilityState === 'visible') fetchMe().catch(() => {});
+        };
+        window.addEventListener('focus', refreshVisibleSession);
+        const timer = window.setInterval(refreshVisibleSession, 30000);
+        return () => {
+            window.removeEventListener('focus', refreshVisibleSession);
+            window.clearInterval(timer);
+        };
+    }, [user, fetchMe]);
 
     const login = async (email, password) => {
         const res = await api.post('auth/login/', { email, password });
@@ -55,18 +71,18 @@ export function AuthProvider({ children }) {
             old_password: oldPassword,
             new_password: newPassword,
         });
-        // Other sessions were revoked; this one gets a fresh token pair.
+
         setAccessToken(res.data.access);
     };
 
     const hasPermission = (codename) => {
         if (!user) return false;
-        if (user.is_super_admin) return true;
         return user.permissions?.includes(codename) ?? false;
     };
+    const hasAnyPermission = (codenames) => codenames.some(hasPermission);
 
     return (
-        <AuthContext.Provider value={{ user, loading, login, logout, changePassword, hasPermission, refreshUser: fetchMe }}>
+        <AuthContext.Provider value={{ user, loading, login, logout, changePassword, hasPermission, hasAnyPermission, refreshUser: fetchMe }}>
             {children}
         </AuthContext.Provider>
     );

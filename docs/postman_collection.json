@@ -334,7 +334,7 @@
           ]
         },
         {
-          "name": "Forgot password (no token in response)",
+          "name": "Forgot password (OTP sent by email)",
           "request": {
             "method": "POST",
             "header": [
@@ -374,14 +374,14 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
-                  "pm.test('no token leaked', () => pm.expect(pm.response.text()).to.not.include('token'));"
+                  "pm.test('no OTP leaked', () => pm.expect(pm.response.text()).to.not.match(/\\b\\d{6}\\b/));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Reset password (token from emailed link)",
+          "name": "Reset password (OTP from email)",
           "request": {
             "method": "POST",
             "header": [
@@ -403,7 +403,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"token\": \"{{token}}\",\n  \"new_password\": \"An0ther!Strong#Pw2\"\n}",
+              "raw": "{\n  \"email\": \"customer@example.com\",\n  \"otp\": \"{{otp}}\",\n  \"new_password\": \"An0ther!Strong#Pw2\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

@@ -26,7 +26,7 @@ h2 { font-size: 18px; }
 h3 { font-size: 16px; }
 a { color: var(--primary); }
 
-/* Layout */
+
 .layout { display: flex; min-height: 100vh; }
 .content { flex: 1; padding: 24px 32px; overflow-x: auto; }
 
@@ -49,7 +49,7 @@ a { color: var(--primary); }
 .nav-link.active { background: var(--primary); color: #fff; }
 .sidebar-logout { margin-top: 16px; }
 
-/* Cards & auth pages */
+
 .card {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -62,7 +62,7 @@ a { color: var(--primary); }
 .auth-card { width: 100%; max-width: 380px; }
 .access-denied h2 { color: var(--danger); margin-top: 0; }
 
-/* Forms */
+
 label { display: block; margin-bottom: 12px; font-weight: 500; }
 label input, label select { display: block; width: 100%; margin-top: 4px; }
 input, select, textarea {
@@ -93,7 +93,7 @@ button:hover { border-color: #b8bfca; }
 .btn-danger { background: var(--danger); border-color: var(--danger); }
 .btn-small { padding: 3px 8px; font-size: 12px; }
 
-/* Tables */
+
 table {
     border-collapse: collapse;
     width: 100%;
@@ -105,7 +105,7 @@ table {
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { background: #f0f2f5; font-weight: 600; font-size: 13px; }
 
-/* Messages */
+
 .muted { color: var(--muted); }
 .error { color: var(--danger); }
 .success { color: var(--success); }
@@ -127,7 +127,7 @@ th { background: #f0f2f5; font-weight: 600; font-size: 13px; }
 }
 .banner-close { border: none; background: none; font-size: 18px; line-height: 1; padding: 0; margin: 0; }
 
-/* Dashboard stats */
+
 .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .stat {
     background: var(--surface);
@@ -138,3 +138,15 @@ th { background: #f0f2f5; font-weight: 600; font-size: 13px; }
 }
 .stat span { display: block; color: var(--muted); font-size: 12px; }
 .stat strong { font-size: 24px; }
+.swal-backdrop { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 20px; background: rgba(15, 23, 42, .48); }
+.swal-dialog { width: min(100%, 440px); padding: 28px; text-align: center; background: var(--surface); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.24); }
+.swal-dialog h2 { margin: 12px 0 8px; }
+.swal-dialog p { color: var(--muted); }
+.swal-mark { width: 58px; height: 58px; display: grid; place-items: center; margin: 0 auto; border: 3px solid currentColor; border-radius: 50%; font-size: 30px; font-weight: 700; }
+.swal-success { color: #16834a; }
+.swal-warning { color: #d78a08; }
+.swal-actions { display: flex; justify-content: center; gap: 10px; margin-top: 22px; }
+.btn-secondary { background: #64748b; }
+.field-error { display: block; min-height: 18px; color: var(--danger); font-size: 12px; }
+.password-input { display: flex; gap: 6px; align-items: center; }
+.password-input input { flex: 1; min-width: 0; }

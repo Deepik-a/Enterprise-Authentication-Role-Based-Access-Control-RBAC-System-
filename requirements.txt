@@ -8,5 +8,6 @@ drf-spectacular==0.28.0
 psycopg[binary]>=3.3.6
 PyJWT==2.15.1
 python-dotenv==1.1.1
+redis>=5.0.0
 sqlparse==0.6.1
 tzdata==2026.6

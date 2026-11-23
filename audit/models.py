@@ -35,13 +35,13 @@ class AuditLog(models.Model):
         blank=True,
         related_name='audit_logs'
     )
-    # Generic relation to any model
+
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     object_id = models.PositiveIntegerField()
     content_object = GenericForeignKey('content_type', 'object_id')
-    # Kept so the entry still reads well after the object is deleted.
+
     object_repr = models.CharField(max_length=200, blank=True, default='')
-    # JSON snapshot of what changed
+
     changes = models.JSONField(null=True, blank=True)
 
     class Meta:

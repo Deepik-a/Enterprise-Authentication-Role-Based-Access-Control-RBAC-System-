@@ -11,16 +11,16 @@ from django.utils import timezone
 class User(AbstractUser):
     email = models.EmailField(unique=True)
     is_active = models.BooleanField(default=True)
-    # False only for self-registered users who haven't clicked the activation link.
-    # Kept separate from is_active so an admin-deactivated account can't be
-    # re-enabled through the activation flow.
+
+
+
     email_verified = models.BooleanField(default=True)
     roles = models.ManyToManyField("roles.Role", blank=True, related_name="users")
-    # A user's manager. A Manager's "team" is every user whose manager is them.
+
     manager = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="team_members"
     )
-    # Embedded in every JWT. Bumping it revokes all tokens issued before.
+
     token_version = models.PositiveIntegerField(default=0)
 
     USERNAME_FIELD = "email"
@@ -28,11 +28,10 @@ class User(AbstractUser):
 
 
 class OneTimeToken(models.Model):
-    """Single-use token for password reset and account activation.
+    """Single-use token for activation and legacy password-reset links.
 
     Only the SHA-256 hash is stored, so a database leak doesn't expose
-    usable tokens. Stored in the DB (not the cache) so tokens survive
-    restarts and work across processes.
+    usable tokens. Current password-reset challenges use a short-lived cache OTP.
     """
 
     PURPOSE_RESET = "reset"
@@ -58,7 +57,7 @@ class OneTimeToken(models.Model):
     @classmethod
     def issue(cls, user, purpose):
         """Create a token and return the raw value (to be emailed, never stored)."""
-        # Only the newest token of a purpose is valid.
+
         cls.objects.filter(user=user, purpose=purpose, used_at__isnull=True).update(used_at=timezone.now())
         raw = secrets.token_urlsafe(32)
         cls.objects.create(

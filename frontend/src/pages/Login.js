@@ -3,12 +3,14 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { errorMessage } from '../api';
 import { useAuth } from '../AuthContext';
 import { AuthCard } from './AuthPages';
+import PasswordInput from '../components/PasswordInput';
 
 export default function Login() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
+    const [emailError, setEmailError] = useState('');
     const { user, login } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
@@ -32,14 +34,13 @@ export default function Login() {
     return (
         <AuthCard title="Sign in">
             {error && <p className="error">{error}</p>}
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSubmit} noValidate>
                 <label>Email
-                    <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+                    <input type="text" value={email} onChange={(e) => { const value = e.target.value; setEmail(value); setEmailError(value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? 'Enter a valid email address.' : ''); }} />
+                    {emailError && <span className="field-error">{emailError}</span>}
                 </label>
-                <label>Password
-                    <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-                </label>
-                <button className="btn" disabled={busy}>Login</button>
+                <PasswordInput label="Password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+                <button className="btn" disabled={busy || !!emailError || !email || !password}>Login</button>
             </form>
             <p><Link to="/forgot-password">Forgot password?</Link></p>
             <p>No account? <Link to="/register">Register</Link></p>

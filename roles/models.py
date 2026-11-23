@@ -14,7 +14,7 @@ class Module(models.Model):
     slug = models.SlugField(max_length=100, unique=True, null=True, blank=True)
     route = models.CharField(max_length=100, blank=True, default="")
     order = models.PositiveIntegerField(default=100)
-    # System modules are created by seed_data and cannot be deleted through the API.
+
     is_system = models.BooleanField(default=False)
 
     class Meta:
@@ -48,8 +48,8 @@ class Role(models.Model):
     EMPLOYEE = "employee"
     CUSTOMER = "customer"
 
-    # Data scope decides *which records* a role can see once it has the
-    # permission to see a kind of record at all (object-level scoping).
+
+
     SCOPE_ALL = "all"
     SCOPE_TEAM = "team"
     SCOPE_OWN = "own"
@@ -61,10 +61,10 @@ class Role(models.Model):
     SCOPE_RANK = {SCOPE_OWN: 0, SCOPE_TEAM: 1, SCOPE_ALL: 2}
 
     name = models.CharField(max_length=100, unique=True)
-    # Stable identifier for built-in roles. Never derived from `name`, so
-    # renaming a role can't change who is treated as Super Admin.
+
+
     code = models.SlugField(max_length=50, unique=True, null=True, blank=True)
-    # System roles are seeded and cannot be edited or deleted through the API.
+
     is_system = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     data_scope = models.CharField(max_length=10, choices=SCOPE_CHOICES, default=SCOPE_OWN)
@@ -72,3 +72,9 @@ class Role(models.Model):
 
     def __str__(self):
         return self.name
+
+    def delete(self, *args, **kwargs):
+        if self.code == self.SUPER_ADMIN:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Super Admin role cannot be deleted.")
+        return super().delete(*args, **kwargs)

@@ -1,11 +1,11 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
 
-/*
- * The menu comes from `user.modules` returned by /api/auth/me/. The backend
- * only lists modules the user can view, each with its route and order, so
- * adding a module or changing a role changes the menu with no frontend edit.
- */
+
+
+
+
+
 export default function Sidebar() {
     const { user, logout } = useAuth();
     const navigate = useNavigate();

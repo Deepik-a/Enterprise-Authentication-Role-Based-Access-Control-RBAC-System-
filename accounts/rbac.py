@@ -7,8 +7,6 @@ def is_super_admin(user):
     """Super Admin is identified by the role's stable `code`, never by its name."""
     if not user or not user.is_authenticated:
         return False
-    if user.is_superuser:
-        return True
     return user.roles.filter(code=Role.SUPER_ADMIN, is_active=True).exists()
 
 
@@ -59,9 +57,23 @@ def can_manage_user(actor, target):
     """
     if is_super_admin(actor):
         return True
-    if is_super_admin(target):
+    if is_super_admin(target) or target.is_superuser or target.is_staff:
+        return False
+    if Role.SCOPE_RANK.get(get_data_scope(target), 0) > Role.SCOPE_RANK.get(get_data_scope(actor), 0):
         return False
     return get_permission_codes(target) <= get_permission_codes(actor)
+
+
+def is_last_active_super_admin(user):
+    """Check if `user` is currently an active Super Admin and is the only active Super Admin in the system."""
+    if not user or not user.is_active or not is_super_admin(user):
+        return False
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    active_sa_count = User.objects.filter(
+        roles__code=Role.SUPER_ADMIN, roles__is_active=True, is_active=True,
+    ).distinct().count()
+    return active_sa_count <= 1
 
 
 def check_role_assignment(actor, target, roles):
@@ -70,12 +82,19 @@ def check_role_assignment(actor, target, roles):
         return "You cannot change your own roles."
     if not can_manage_user(actor, target):
         return "You cannot change the roles of a user with more privileges than you."
-    if any(role.code == Role.SUPER_ADMIN for role in roles) and not is_super_admin(actor):
-        return "Only a Super Admin can grant the Super Admin role."
+    if any(role.code == Role.SUPER_ADMIN for role in roles):
+        return "Super Admin accounts can only be created by the seed process."
     if not is_super_admin(actor):
         missing = role_permission_codes(roles) - get_permission_codes(actor)
         if missing:
             return "You can only assign roles whose permissions you hold. Missing: " + ", ".join(sorted(missing))
+        actor_scope = Role.SCOPE_RANK.get(get_data_scope(actor), 0)
+        if any(Role.SCOPE_RANK.get(role.data_scope, 0) > actor_scope for role in roles):
+            return "You cannot assign a role with a wider data scope than your own."
+    if target.is_active and is_last_active_super_admin(target):
+        has_sa = any(role.code == Role.SUPER_ADMIN for role in roles)
+        if not has_sa:
+            return "Cannot remove Super Admin role from the last active Super Admin account."
     return None
 
 

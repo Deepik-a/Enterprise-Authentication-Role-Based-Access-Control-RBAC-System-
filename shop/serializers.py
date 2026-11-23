@@ -20,7 +20,7 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = ['id', 'customer', 'customer_email', 'product', 'product_name', 'quantity',
                   'unit_price', 'total', 'status', 'created_at']
-        # customer and price come from the server, not the client.
+
         read_only_fields = ['customer', 'unit_price', 'status', 'created_at']
 
 

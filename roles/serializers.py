@@ -25,5 +25,5 @@ class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role
         fields = ['id', 'name', 'code', 'is_system', 'is_active', 'data_scope', 'permissions', 'user_count']
-        # `code` and `is_system` identify built-in roles; they can only be set by seed_data.
+
         read_only_fields = ['code', 'is_system']

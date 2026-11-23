@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
 from accounts.permissions import HasModulePermission
-from accounts.rbac import check_permission_grant, get_data_scope, is_super_admin
+from accounts.rbac import check_permission_grant, get_data_scope, get_permission_codes, is_super_admin
 from audit.models import AuditLog
 from audit.utils import log_action
 
@@ -61,17 +61,39 @@ def _jsonable(data):
     return out
 
 
+CRITICAL_SUPER_ADMIN_PERMISSIONS = {
+    'user_management_view', 'user_management_create', 'user_management_edit', 'user_management_delete',
+    'role_management_view', 'role_management_create', 'role_management_edit', 'role_management_delete',
+    'permission_management_view', 'permission_management_create', 'permission_management_edit', 'permission_management_delete',
+    'module_management_view', 'module_management_create', 'module_management_edit', 'module_management_delete',
+}
+
+
 class RoleViewSet(AuditedModelViewSet):
     queryset = Role.objects.prefetch_related('permissions__module').order_by('id')
     serializer_class = RoleSerializer
-    permission_map = crud_map('role_management', {'assign_permissions': 'role_management_edit'})
+    permission_map = crud_map('role_management', {
+        'assign_permissions': ['role_management_assign', 'role_management_edit'],
+    })
 
-    def _check_editable(self, role):
-        if role.is_system:
-            raise PermissionDenied("System roles cannot be modified or deleted.")
+    def _check_role_authority(self, role):
+        if role.code == Role.SUPER_ADMIN:
+            if not is_super_admin(self.request.user):
+                raise PermissionDenied("Only an authorized Super Admin can manage the Super Admin role.")
+            return
+
+        if not is_super_admin(self.request.user):
+
+            if role.users.filter(pk=self.request.user.pk).exists():
+                raise PermissionDenied("You cannot modify or delete a role you hold.")
+
+            role_perms = set(role.permissions.values_list('codename', flat=True))
+            actor_perms = get_permission_codes(self.request.user)
+            if not role_perms.issubset(actor_perms):
+                raise PermissionDenied("You cannot modify or delete a role with permissions beyond your authority.")
 
     def _check_scope(self, data_scope):
-        # A wider data scope is a privilege too: you can't hand out more than you have.
+
         if data_scope and not is_super_admin(self.request.user):
             if Role.SCOPE_RANK.get(data_scope, 0) > Role.SCOPE_RANK[get_data_scope(self.request.user)]:
                 raise PermissionDenied("You cannot grant a wider data scope than your own.")
@@ -81,34 +103,53 @@ class RoleViewSet(AuditedModelViewSet):
         super().perform_create(serializer)
 
     def perform_update(self, serializer):
-        self._check_editable(serializer.instance)
+        role = serializer.instance
+        if role.code == Role.SUPER_ADMIN:
+            if not is_super_admin(self.request.user):
+                raise PermissionDenied("Only an authorized Super Admin can modify the Super Admin role.")
+            if serializer.validated_data.get('is_active') is False:
+                raise PermissionDenied("The Super Admin role cannot be deactivated.")
+        else:
+            self._check_role_authority(role)
+
         self._check_scope(serializer.validated_data.get('data_scope'))
         super().perform_update(serializer)
 
     def perform_destroy(self, instance):
-        self._check_editable(instance)
+        if instance.code == Role.SUPER_ADMIN:
+            raise PermissionDenied("Super Admin role cannot be deleted.")
+        self._check_role_authority(instance)
         super().perform_destroy(instance)
 
     @action(detail=True, methods=['post'])
     def assign_permissions(self, request, pk=None):
         role = self.get_object()
-        self._check_editable(role)
+        if role.code == Role.SUPER_ADMIN:
+            if not is_super_admin(request.user):
+                raise PermissionDenied("Only an authorized Super Admin can modify the Super Admin role.")
+        else:
+            self._check_role_authority(role)
 
         permission_ids = request.data.get('permission_ids', [])
-        if not isinstance(permission_ids, list):
-            raise ValidationError({'permission_ids': 'Must be a list of permission IDs.'})
+        if not isinstance(permission_ids, list) or any(type(value) is not int for value in permission_ids):
+            raise ValidationError({'permission_ids': 'Must be a list of integer permission IDs.'})
         permissions = list(Permission.objects.filter(id__in=permission_ids))
         if len(permissions) != len(set(permission_ids)):
             raise ValidationError({'permission_ids': 'One or more permission IDs do not exist.'})
 
+
+        if role.code == Role.SUPER_ADMIN:
+            missing_critical = CRITICAL_SUPER_ADMIN_PERMISSIONS - {p.codename for p in permissions}
+            if missing_critical:
+                raise PermissionDenied(f"Critical Super Admin permissions cannot be removed: {', '.join(sorted(missing_critical))}")
+
         error = check_permission_grant(request.user, [p.codename for p in permissions])
         if error:
             raise PermissionDenied(error)
-        # Users can't widen the permissions of a role they hold themselves.
+
+
         if not is_super_admin(request.user) and role.users.filter(pk=request.user.pk).exists():
-            added = {p.pk for p in permissions} - set(role.permissions.values_list('pk', flat=True))
-            if added:
-                raise PermissionDenied("You cannot add permissions to a role you hold.")
+            raise PermissionDenied("You cannot modify permissions of a role you hold.")
 
         before = sorted(role.permissions.values_list('codename', flat=True))
         role.permissions.set(permissions)

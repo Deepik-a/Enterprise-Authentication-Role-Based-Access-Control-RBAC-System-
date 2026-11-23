@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import api, { errorMessage } from '../api';
 import { useAuth } from '../AuthContext';
+import { useSweetAlert } from '../components/SweetAlert';
 
 export default function Users() {
     const [users, setUsers] = useState([]);
@@ -9,31 +10,38 @@ export default function Users() {
     const [currentPage, setCurrentPage] = useState(1);
     const pageSize = 10;
 
-    // Search and filter states
+
     const [searchTerm, setSearchTerm] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState('');
     const [roleFilter, setRoleFilter] = useState('');
 
-    // Modal / Panel states
+
     const [showCreate, setShowCreate] = useState(false);
     const [newUser, setNewUser] = useState({
         email: '',
         username: '',
         password: '',
-        first_name: '',
-        last_name: '',
         role_ids: []
     });
+    const [createOtp, setCreateOtp] = useState('');
+    const [awaitingOtp, setAwaitingOtp] = useState(false);
+    const [showNewPassword, setShowNewPassword] = useState(false);
+    const createErrors = {
+        email: newUser.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newUser.email) ? 'Enter a valid email address.' : '',
+        username: newUser.username.trim().length < 3 ? 'Username must be at least 3 characters.' : '',
+        password: newUser.password.length < 8 ? 'Password must be at least 8 characters.' : '',
+    };
+    const { alert, confirm } = useSweetAlert();
 
     const [viewUser, setViewUser] = useState(null);
     const [editUser, setEditUser] = useState(null);
     const [roleAssignUser, setRoleAssignUser] = useState(null);
     const [selectedRoleIds, setSelectedRoleIds] = useState([]);
 
-    const { hasPermission } = useAuth();
+    const { hasPermission, hasAnyPermission } = useAuth();
 
-    // Fetch user list with search, filter, and pagination
+
     const fetchUsers = useCallback(async () => {
         try {
             const params = new URLSearchParams();
@@ -55,7 +63,7 @@ export default function Users() {
         }
     }, [currentPage, searchQuery, statusFilter, roleFilter]);
 
-    // Fetch all roles for dropdowns and role assignment
+
     const fetchRoles = async () => {
         try {
             const res = await api.get('roles/');
@@ -73,7 +81,7 @@ export default function Users() {
         fetchUsers();
     }, [fetchUsers]);
 
-    // Search handler
+
     const handleSearch = (e) => {
         e.preventDefault();
         setCurrentPage(1);
@@ -88,89 +96,83 @@ export default function Users() {
         setCurrentPage(1);
     };
 
-    // View individual user details
+
     const handleViewDetails = async (id) => {
         try {
             const res = await api.get(`users/${id}/`);
             setViewUser(res.data);
         } catch (err) {
-            alert(errorMessage(err, 'Failed to load user details'));
+            await alert('Could not load user', errorMessage(err, 'Failed to load user details'));
         }
     };
 
-    // Create user
+
     const handleCreateUser = async (e) => {
         e.preventDefault();
         try {
-            const res = await api.post('users/', {
+            const res = await api.post('users/register_with_otp/', {
                 email: newUser.email,
                 username: newUser.username,
                 password: newUser.password,
-                first_name: newUser.first_name,
-                last_name: newUser.last_name,
+                role_ids: newUser.role_ids.filter(id => allRoles.find(r => r.id === id)?.code !== 'super_admin'),
             });
-
-            // If roles were selected during creation, assign them
-            if (newUser.role_ids.length > 0 && res.data?.id) {
-                await api.post(`users/${res.data.id}/assign_roles/`, {
-                    role_ids: newUser.role_ids,
-                });
-            }
-
-            alert('User created successfully');
-            setShowCreate(false);
-            setNewUser({
-                email: '',
-                username: '',
-                password: '',
-                first_name: '',
-                last_name: '',
-                role_ids: []
-            });
-            fetchUsers();
+            setAwaitingOtp(true);
+            await alert('Verification email sent', res.data.message);
         } catch (err) {
-            alert('Failed to create user: ' + errorMessage(err));
+            await alert('Could not start registration', errorMessage(err));
         }
     };
 
-    // Edit user details
+    const handleVerifyCreate = async (e) => {
+        e.preventDefault();
+        try {
+            const res = await api.post('auth/verify-otp/', { email: newUser.email, otp: createOtp });
+            await alert('User created', res.data.message);
+            setShowCreate(false);
+            setAwaitingOtp(false);
+            setCreateOtp('');
+            setNewUser({ email: '', username: '', password: '', role_ids: [] });
+            fetchUsers();
+        } catch (err) {
+            await alert('Could not verify email', errorMessage(err));
+        }
+    };
+
+
     const handleSaveEdit = async (e) => {
         e.preventDefault();
         try {
             await api.patch(`users/${editUser.id}/`, {
                 username: editUser.username,
-                email: editUser.email,
-                first_name: editUser.first_name,
-                last_name: editUser.last_name,
-                manager: editUser.manager || null,
             });
-            alert('User updated successfully');
+            await alert('User updated', 'Username was updated successfully.');
             setEditUser(null);
             fetchUsers();
             if (viewUser && viewUser.id === editUser.id) {
                 handleViewDetails(editUser.id);
             }
         } catch (err) {
-            alert('Failed to update user: ' + errorMessage(err));
+            await alert('Could not update user', errorMessage(err));
         }
     };
 
-    // Toggle active / deactivate
+
     const handleToggleActive = async (id) => {
         try {
             const res = await api.post(`users/${id}/toggle_active/`);
-            alert(`User status changed to: ${res.data.is_active ? 'Active' : 'Deactivated'}`);
+            await alert('User status updated', `Account is now ${res.data.is_active ? 'active' : 'deactivated'}.`);
             fetchUsers();
             if (viewUser && viewUser.id === id) {
                 setViewUser({ ...viewUser, is_active: res.data.is_active });
             }
         } catch (err) {
-            alert(errorMessage(err, 'Failed to change user active status'));
+            await alert('Could not update user status', errorMessage(err, 'Failed to change user active status'));
         }
     };
 
-    // Assign / Change roles
+
     const openRoleAssignment = (u) => {
+        fetchRoles();
         setRoleAssignUser(u);
         const currentRoleIds = allRoles
             .filter(r => u.roles?.includes(r.name))
@@ -189,27 +191,27 @@ export default function Users() {
             await api.post(`users/${roleAssignUser.id}/assign_roles/`, {
                 role_ids: selectedRoleIds,
             });
-            alert('User roles updated successfully');
+            await alert('Roles updated', 'User roles were updated successfully.');
             setRoleAssignUser(null);
             fetchUsers();
             if (viewUser && viewUser.id === roleAssignUser.id) {
                 handleViewDetails(roleAssignUser.id);
             }
         } catch (err) {
-            alert(errorMessage(err, 'Failed to assign roles'));
+            await alert('Could not assign roles', errorMessage(err, 'Failed to assign roles'));
         }
     };
 
-    // Delete user
+
     const handleDeleteUser = async (id, email) => {
-        if (!window.confirm(`Are you sure you want to delete user "${email}"?`)) return;
+        if (!await confirm('Delete user?', `Are you sure you want to delete ${email}?`)) return;
         try {
             await api.delete(`users/${id}/`);
-            alert('User deleted');
+            await alert('User deleted', 'The user was deleted.');
             if (viewUser && viewUser.id === id) setViewUser(null);
             fetchUsers();
         } catch (err) {
-            alert(err.response?.data?.error || 'Failed to delete user: ' + JSON.stringify(err.response?.data || err.message));
+            await alert('Could not delete user', err.response?.data?.error || errorMessage(err));
         }
     };
 
@@ -219,10 +221,10 @@ export default function Users() {
         <div>
             <h1>User Management</h1>
 
-            {/* Top Toolbar: Search, Filter & Create */}
+
             <div style={{ marginBottom: 15 }}>
                 <form onSubmit={handleSearch} style={{ display: 'inline' }}>
-                    <input
+                    <inpu
                         placeholder="Search email, username, name..."
                         value={searchTerm}
                         onChange={e => setSearchTerm(e.target.value)}
@@ -269,57 +271,40 @@ export default function Users() {
                 )}
             </div>
 
-            {/* Create User Form */}
+
             {showCreate && (
                 <div style={{ border: '1px solid black', padding: 15, marginBottom: 20 }}>
                     <h3>Create New User</h3>
-                    <form onSubmit={handleCreateUser}>
+                    {!awaitingOtp ? <form onSubmit={handleCreateUser} noValidate>
                         <div>
                             <label>Email: </label>
-                            <input
-                                type="email"
-                                required
+                            <inpu
+                                type="text"
                                 value={newUser.email}
                                 onChange={e => setNewUser({ ...newUser, email: e.target.value })}
                             />
+                            {newUser.email && createErrors.email && <span className="field-error">{createErrors.email}</span>}
                         </div>
                         <div>
                             <label>Username: </label>
-                            <input
-                                required
+                            <inpu
                                 value={newUser.username}
                                 onChange={e => setNewUser({ ...newUser, username: e.target.value })}
                             />
+                            {newUser.username && createErrors.username && <span className="field-error">{createErrors.username}</span>}
                         </div>
                         <div>
                             <label>Password: </label>
-                            <input
-                                type="password"
-                                required
-                                minLength={8}
-                                value={newUser.password}
-                                onChange={e => setNewUser({ ...newUser, password: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <label>First Name: </label>
-                            <input
-                                value={newUser.first_name}
-                                onChange={e => setNewUser({ ...newUser, first_name: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <label>Last Name: </label>
-                            <input
-                                value={newUser.last_name}
-                                onChange={e => setNewUser({ ...newUser, last_name: e.target.value })}
-                            />
+                            <div className="password-input"><input type={showNewPassword ? 'text' : 'password'} value={newUser.password}
+                                onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
+                                <button type="button" onClick={() => setShowNewPassword(v => !v)}>{showNewPassword ? 'Hide' : 'Show'}</button></div>
+                            {newUser.password && createErrors.password && <span className="field-error">{createErrors.password}</span>}
                         </div>
 
                         <p><strong>Assign Initial Roles:</strong></p>
-                        {allRoles.map(r => (
+                        {allRoles.filter(r => r.code !== 'super_admin').map(r => (
                             <label key={r.id} style={{ display: 'block' }}>
-                                <input
+                                <inpu
                                     type="checkbox"
                                     checked={newUser.role_ids.includes(r.id)}
                                     onChange={() => {
@@ -334,14 +319,20 @@ export default function Users() {
                         ))}
 
                         <div style={{ marginTop: 10 }}>
-                            <button type="submit">Submit & Create User</button>
+                            <button type="submit" disabled={Object.values(createErrors).some(Boolean)}>Send verification code</button>
                             <button type="button" onClick={() => setShowCreate(false)} style={{ marginLeft: 10 }}>Cancel</button>
                         </div>
-                    </form>
+                    </form> : <form onSubmit={handleVerifyCreate} noValidate>
+                        <p>Enter the six-digit code sent to <strong>{newUser.email}</strong>.</p>
+                        <label>Verification code<input inputMode="numeric" value={createOtp} maxLength={6}
+                            onChange={e => setCreateOtp(e.target.value.replace(/\D/g, '').slice(0, 6))} /></label>
+                        <button type="submit" disabled={createOtp.length !== 6}>Verify and create user</button>
+                        <button type="button" onClick={async () => { try { const r = await api.post('auth/resend-otp/', { email: newUser.email }); await alert('Code sent', r.data.message); } catch (err) { await alert('Could not resend code', errorMessage(err)); } }}>Resend code</button>
+                    </form>}
                 </div>
             )}
 
-            {/* Individual User Details Viewer */}
+
             {viewUser && (
                 <div style={{ border: '2px solid green', padding: 15, marginBottom: 20 }}>
                     <h3>Individual User Details (ID: {viewUser.id})</h3>
@@ -349,11 +340,8 @@ export default function Users() {
                         <tbody>
                             <tr><th>Email</th><td>{viewUser.email}</td></tr>
                             <tr><th>Username</th><td>{viewUser.username}</td></tr>
-                            <tr><th>First Name</th><td>{viewUser.first_name || '-'}</td></tr>
-                            <tr><th>Last Name</th><td>{viewUser.last_name || '-'}</td></tr>
                             <tr><th>Status</th><td>{viewUser.is_active ? 'Active' : 'Deactivated'}</td></tr>
                             <tr><th>Manager</th><td>{viewUser.manager_email || 'None'}</td></tr>
-                            <tr><th>Superuser?</th><td>{viewUser.is_superuser ? 'Yes' : 'No'}</td></tr>
                             <tr><th>Roles</th><td>{viewUser.roles?.length > 0 ? viewUser.roles.join(', ') : 'None'}</td></tr>
                             <tr><th>Date Joined</th><td>{viewUser.date_joined ? new Date(viewUser.date_joined).toLocaleString() : '-'}</td></tr>
                             <tr><th>Last Login</th><td>{viewUser.last_login ? new Date(viewUser.last_login).toLocaleString() : 'Never'}</td></tr>
@@ -365,63 +353,28 @@ export default function Users() {
                 </div>
             )}
 
-            {/* Update / Edit User Form */}
+
             {editUser && (
                 <div style={{ border: '1px solid orange', padding: 15, marginBottom: 20 }}>
                     <h3>Edit User (ID: {editUser.id})</h3>
-                    <form onSubmit={handleSaveEdit}>
-                        <div>
-                            <label>Email: </label>
-                            <input
-                                type="email"
-                                required
-                                value={editUser.email}
-                                onChange={e => setEditUser({ ...editUser, email: e.target.value })}
-                            />
-                        </div>
+                    <form onSubmit={handleSaveEdit} noValidate>
                         <div>
                             <label>Username: </label>
-                            <input
-                                required
+                            <inpu
                                 value={editUser.username}
                                 onChange={e => setEditUser({ ...editUser, username: e.target.value })}
                             />
-                        </div>
-                        <div>
-                            <label>First Name: </label>
-                            <input
-                                value={editUser.first_name || ''}
-                                onChange={e => setEditUser({ ...editUser, first_name: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <label>Last Name: </label>
-                            <input
-                                value={editUser.last_name || ''}
-                                onChange={e => setEditUser({ ...editUser, last_name: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <label>Manager (team): </label>
-                            <select
-                                value={editUser.manager || ''}
-                                onChange={e => setEditUser({ ...editUser, manager: e.target.value ? Number(e.target.value) : null })}
-                            >
-                                <option value="">No manager</option>
-                                {users.filter(u => u.id !== editUser.id).map(u => (
-                                    <option key={u.id} value={u.id}>{u.email}</option>
-                                ))}
-                            </select>
+                            {editUser.username.trim().length < 3 && <span className="field-error">Username must be at least 3 characters.</span>}
                         </div>
                         <div style={{ marginTop: 10 }}>
-                            <button type="submit">Save Changes</button>
+                            <button type="submit" disabled={editUser.username.trim().length < 3}>Save Changes</button>
                             <button type="button" onClick={() => setEditUser(null)} style={{ marginLeft: 10 }}>Cancel</button>
                         </div>
                     </form>
                 </div>
             )}
 
-            {/* Assign / Change Roles Panel */}
+
             {roleAssignUser && (
                 <div style={{ border: '1px solid purple', padding: 15, marginBottom: 20 }}>
                     <h3>Change Roles for: {roleAssignUser.username} ({roleAssignUser.email})</h3>
@@ -429,9 +382,9 @@ export default function Users() {
                     {allRoles.length === 0 ? (
                         <p>No roles available.</p>
                     ) : (
-                        allRoles.map(r => (
+                        allRoles.filter(r => r.code !== 'super_admin').map(r => (
                             <label key={r.id} style={{ display: 'block', marginBottom: 5 }}>
-                                <input
+                                <inpu
                                     type="checkbox"
                                     checked={selectedRoleIds.includes(r.id)}
                                     onChange={() => toggleRoleId(r.id)}
@@ -447,7 +400,7 @@ export default function Users() {
                 </div>
             )}
 
-            {/* Main Users Table */}
+
             <table border="1" cellPadding="5" style={{ width: '100%', marginTop: 10 }}>
                 <thead>
                     <tr>
@@ -475,17 +428,17 @@ export default function Users() {
                                 </td>
                                 <td>{u.roles?.length > 0 ? u.roles.join(', ') : 'None'}</td>
                                 <td>
-                                    {/* View individual details */}
+
                                     <button onClick={() => handleViewDetails(u.id)}>View Details</button>
 
-                                    {/* Update User */}
+
                                     {hasPermission('user_management_edit') && (
                                         <button onClick={() => setEditUser(u)} style={{ marginLeft: 5 }}>
-                                            Edit
+                                            Edi
                                         </button>
                                     )}
 
-                                    {/* Activate / Deactivate */}
+
                                     {hasPermission('user_management_edit') && (
                                         <button
                                             onClick={() => handleToggleActive(u.id)}
@@ -495,8 +448,8 @@ export default function Users() {
                                         </button>
                                     )}
 
-                                    {/* Assign / Change Roles */}
-                                    {hasPermission('user_management_edit') && (
+
+                                    {hasAnyPermission(['user_management_assign', 'user_management_edit']) && (
                                         <button
                                             onClick={() => openRoleAssignment(u)}
                                             style={{ marginLeft: 5 }}
@@ -505,7 +458,7 @@ export default function Users() {
                                         </button>
                                     )}
 
-                                    {/* Delete User */}
+
                                     {hasPermission('user_management_delete') && (
                                         <button
                                             onClick={() => handleDeleteUser(u.id, u.email)}
@@ -521,7 +474,7 @@ export default function Users() {
                 </tbody>
             </table>
 
-            {/* Pagination Controls */}
+
             <div style={{ marginTop: 15 }}>
                 <button
                     disabled={currentPage <= 1}

@@ -4,13 +4,24 @@ Run with:  python manage.py test
 """
 
 import re
+from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.core import mail
 from django.core.cache import cache
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
+
+from accounts.pending_registration import (
+    RegistrationRejected, _email_key, _hash_otp as _hash_otp_for_test,
+)
+from accounts.password_reset import (
+    _key as password_reset_key, begin_password_reset, consume_password_reset,
+)
 
 from accounts.models import OneTimeToken
 from accounts.permissions import HasModulePermission
@@ -32,7 +43,7 @@ class RBACTestCase(APITestCase):
     @classmethod
     def setUpTestData(cls):
         seed_rbac()
-        cls.roles = {r.code: r for r in Role.objects.filter(is_system=True)}
+        cls.roles = {r.code: r for r in Role.objects.exclude(code=None)}
         cls.superadmin = cls.make_user('superadmin@test.com', Role.SUPER_ADMIN)
         cls.admin = cls.make_user('admin@test.com', Role.ADMIN)
         cls.manager = cls.make_user('manager@test.com', Role.MANAGER)
@@ -51,7 +62,16 @@ class RBACTestCase(APITestCase):
         return user
 
     def setUp(self):
-        cache.clear()  # throttling counters
+        cache.clear()
+
+    def _otp(self, index=-1):
+        match = re.search(r'code to .+ is (\d{6})', mail.outbox[index].body)
+        self.assertIsNotNone(match)
+        return match.group(1)
+
+    @staticmethod
+    def _wrong_otp(correct):
+        return '000000' if correct != '000000' else '000001'
 
     def client_for(self, user):
         """An API client authenticated with a real JWT for `user`."""
@@ -70,33 +90,136 @@ class RBACTestCase(APITestCase):
 
 
 class Scenario01RegistrationActivationLogin(RBACTestCase):
-    def test_register_requires_activation_then_login(self):
-        res = self.client.post('/api/auth/register/', {
-            'email': 'new@test.com', 'username': 'newuser', 'password': PASSWORD}, format='json')
-        self.assertEqual(res.status_code, 201)
-        user = User.objects.get(email='new@test.com')
-        self.assertFalse(user.is_active)
-        self.assertTrue(user.password.startswith('pbkdf2_'))  # hashed, never plain text
-        self.assertEqual([r.code for r in user.roles.all()], [Role.CUSTOMER])
+    def _register(self, email='new@test.com', username='newuser', password=PASSWORD):
+        return self.client.post('/api/auth/register/', {
+            'email': email, 'username': username, 'password': password}, format='json')
+
+    @patch('accounts.views._send_otp_email', side_effect=RuntimeError('SMTP credentials leaked'))
+    def test_email_delivery_failure_is_generic_and_clears_pending_signup(self, _send_email):
+        res = self._register()
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(res.data['error'], 'Could not send the verification code. Please try again later.')
+        self.assertNotIn('SMTP credentials leaked', str(res.data))
+        self.assertIsNone(cache.get(_email_key('new@test.com')))
+        self.assertFalse(User.objects.filter(email='new@test.com').exists())
+
+    def test_resend_email_failure_does_not_expose_smtp_details(self):
+        self._register()
+        with patch('accounts.views._send_otp_email', side_effect=RuntimeError('private smtp response')):
+            response = self.client.post('/api/auth/resend-otp/', {'email': 'new@test.com'}, format='json')
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn('private smtp response', str(response.data))
+        self.assertIsNone(cache.get(_email_key('new@test.com')))
+
+    @patch('accounts.views._send_otp_email')
+    def test_admin_created_user_is_pending_until_email_otp_then_gets_selected_role(self, send_email):
+        role = Role.objects.create(name='Auditor', data_scope=Role.SCOPE_OWN)
+        client = self.client_for(self.superadmin)
+        response = client.post('/api/users/register_with_otp/', {
+            'email': 'verified-staff@test.com', 'username': 'verifiedstaff',
+            'password': PASSWORD, 'role_ids': [role.id],
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(User.objects.filter(email='verified-staff@test.com').exists())
+        otp = send_email.call_args.args[2]
+        response = self.client.post('/api/auth/verify-otp/', {
+            'email': 'verified-staff@test.com', 'otp': otp,
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        created = User.objects.get(email='verified-staff@test.com')
+        self.assertEqual(list(created.roles.values_list('name', flat=True)), ['Auditor'])
+
+    @patch('accounts.views._send_otp_email')
+    def test_managed_registration_cannot_assign_super_admin(self, _send_email):
+        client = self.client_for(self.superadmin)
+        response = client.post('/api/users/register_with_otp/', {
+            'email': 'forbidden@test.com', 'username': 'forbiddenuser',
+            'password': PASSWORD, 'role_ids': [self.roles[Role.SUPER_ADMIN].id],
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(email='forbidden@test.com').exists())
+
+    def test_register_keeps_details_in_cache_until_otp(self):
+        res = self._register()
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn('otp', res.data)
+        self.assertFalse(User.objects.filter(email='new@test.com').exists())
+
+        pending = cache.get(_email_key('new@test.com'))
+        self.assertIsNotNone(pending)
+        self.assertNotEqual(pending['password'], PASSWORD)
+        self.assertTrue(pending['password'].startswith('pbkdf2_'))
+        otp = self._otp()
+        self.assertNotIn(otp, str(pending))
 
         _, res = self.login('new@test.com')
         self.assertEqual(res.status_code, 401)
 
-        self.assertEqual(len(mail.outbox), 1)
-        token = re.search(r'token=([\w-]+)', mail.outbox[0].body).group(1)
-        res = self.client.post('/api/auth/activate/', {'token': token}, format='json')
-        self.assertEqual(res.status_code, 200)
+        res = self.client.post('/api/auth/verify-otp/', {
+            'email': 'new@test.com', 'otp': self._wrong_otp(otp)}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(User.objects.filter(email='new@test.com').exists())
+
+        res = self.client.post('/api/auth/verify-otp/', {'email': 'new@test.com', 'otp': otp}, format='json')
+        self.assertEqual(res.status_code, 201)
+        user = User.objects.get(email='new@test.com')
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.email_verified)
+        self.assertTrue(user.check_password(PASSWORD))
+        self.assertEqual([r.code for r in user.roles.all()], [Role.CUSTOMER])
+        self.assertIsNone(cache.get(_email_key('new@test.com')))
 
         client, res = self.login('new@test.com')
         self.assertEqual(res.status_code, 200)
         self.assertIn('access', res.data)
-        self.assertNotIn('refresh', res.data)  # refresh token is only in the httpOnly cookie
+        self.assertNotIn('refresh', res.data)
         cookie = res.cookies['refresh_token']
         self.assertTrue(cookie['httponly'])
 
-        # Activation token is single-use
-        res = self.client.post('/api/auth/activate/', {'token': token}, format='json')
+
+        res = self.client.post('/api/auth/verify-otp/', {'email': 'new@test.com', 'otp': otp}, format='json')
         self.assertEqual(res.status_code, 400)
+
+    def test_otp_expiry_does_not_create_a_user(self):
+        self._register()
+        payload = cache.get(_email_key('new@test.com'))
+        payload['expires_at'] = (timezone.now() - timedelta(seconds=5)).isoformat()
+        cache.set(_email_key('new@test.com'), payload, timeout=60)
+
+        res = self.client.post('/api/auth/verify-otp/', {
+            'email': 'new@test.com', 'otp': self._otp()}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('expired', res.data['error'].lower())
+        self.assertFalse(User.objects.filter(email='new@test.com').exists())
+        self.assertIsNone(cache.get(_email_key('new@test.com')))
+
+    def test_duplicate_email_and_username_are_rejected(self):
+        res = self._register(email='customer@test.com', username='brand-new')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('email', res.data)
+
+        res = self._register(email='brand-new@test.com', username='customer')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('username', res.data)
+        self.assertFalse(User.objects.filter(email='brand-new@test.com').exists())
+
+        self._register()
+        res = self._register(email='other@test.com', username='newuser')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('username', res.data)
+
+    def test_resend_replaces_the_previous_code(self):
+        self._register()
+        first = self._otp()
+        res = self.client.post('/api/auth/resend-otp/', {'email': 'new@test.com'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        second = self._otp()
+        self.assertNotEqual(first, second)
+
+        res = self.client.post('/api/auth/verify-otp/', {'email': 'new@test.com', 'otp': first}, format='json')
+        self.assertEqual(res.status_code, 400)
+        res = self.client.post('/api/auth/verify-otp/', {'email': 'new@test.com', 'otp': second}, format='json')
+        self.assertEqual(res.status_code, 201)
 
     def test_register_rejects_weak_password(self):
         res = self.client.post('/api/auth/register/', {
@@ -104,11 +227,59 @@ class Scenario01RegistrationActivationLogin(RBACTestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn('password', res.data)
 
+    def test_unverified_existing_account_cannot_log_in(self):
+        user = self.make_user('unverified@test.com')
+        user.email_verified = False
+        user.save(update_fields=['email_verified'])
+        _, res = self.login(user.email)
+        self.assertEqual(res.status_code, 401)
+        session = self.client_for(user)
+        self.assertEqual(session.get('/api/auth/me/').status_code, 401)
+        self.assertEqual(self.refresh(session.refresh).status_code, 401)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=['http://localhost:3000'])
     def test_refresh_cookie_rotates(self):
         client, res = self.login('customer@test.com')
-        res = client.post('/api/auth/token/refresh/')
+        res = client.post('/api/auth/token/refresh/', HTTP_ORIGIN='http://localhost:3000')
         self.assertEqual(res.status_code, 200)
         self.assertIn('access', res.data)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=['http://localhost:3000'])
+    def test_refresh_cookie_rejects_untrusted_origin(self):
+        client, res = self.login('customer@test.com')
+        self.assertEqual(res.status_code, 200)
+        res = client.post('/api/auth/token/refresh/', HTTP_ORIGIN='https://attacker.example')
+        self.assertEqual(res.status_code, 403)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=['http://localhost:3000'])
+    def test_refresh_cookie_requires_an_allowlisted_origin(self):
+        for origin, expected in [(None, 403), ('https://attacker.example', 403), ('http://localhost:3000', 200)]:
+            refresh = str(issue_tokens(self.customer))
+            client = APIClient()
+            client.cookies['refresh_token'] = refresh
+            kwargs = {'HTTP_ORIGIN': origin} if origin else {}
+            response = client.post('/api/auth/token/refresh/', {}, format='json', **kwargs)
+            self.assertEqual(response.status_code, expected, origin)
+
+    def test_access_token_without_revocation_version_is_rejected(self):
+        from rest_framework_simplejwt.tokens import AccessToken
+        token = AccessToken.for_user(self.customer)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        self.assertEqual(client.get('/api/auth/me/').status_code, 401)
+
+    def test_expired_access_token_can_be_refreshed(self):
+        refresh = issue_tokens(self.customer)
+        expired_access = refresh.access_token
+        expired_access.set_exp(from_time=timezone.now() - timedelta(minutes=20))
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {expired_access}')
+        self.assertEqual(client.get('/api/auth/me/').status_code, 401)
+
+        res = self.refresh(str(refresh))
+        self.assertEqual(res.status_code, 200)
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {res.data["access"]}')
+        self.assertEqual(client.get('/api/auth/me/').status_code, 200)
 
     def test_login_is_throttled(self):
         for _ in range(5):
@@ -126,19 +297,38 @@ class Scenario02SuperAdminFullAccess(RBACTestCase):
         res = client.get('/api/orders/')
         self.assertEqual(res.data['count'], 2)
 
-    def test_super_admin_can_grant_super_admin(self):
+    def test_super_admin_cannot_create_or_grant_another_super_admin(self):
         client = self.client_for(self.superadmin)
         res = client.post(f'/api/users/{self.admin.id}/assign_roles/',
                           {'role_ids': [self.roles[Role.SUPER_ADMIN].id]}, format='json')
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(self.admin.roles.filter(code=Role.SUPER_ADMIN).exists())
+        response = client.post('/api/users/register_with_otp/', {
+            'email': 'another-superadmin@test.com', 'username': 'another-superadmin',
+            'password': PASSWORD, 'role_ids': [self.roles[Role.SUPER_ADMIN].id],
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(email='another-superadmin@test.com').exists())
 
     def test_super_admin_identified_by_code_not_name(self):
         Role.objects.filter(code=Role.SUPER_ADMIN).update(name='Renamed')
-        Role.objects.create(name='Super Admin')  # a fake role with the old name grants nothing
+        Role.objects.create(name='Super Admin')
         fake = self.make_user('fake@test.com')
         fake.roles.add(Role.objects.get(name='Super Admin'))
         self.assertEqual(self.client_for(fake).get('/api/users/').status_code, 403)
         self.assertEqual(self.client_for(self.superadmin).get('/api/users/').status_code, 200)
+
+    def test_django_superuser_flag_alone_does_not_bypass_application_rbac(self):
+        site_admin = self.make_user('site-admin@test.com')
+        site_admin.is_superuser = True
+        site_admin.is_staff = True
+        site_admin.save(update_fields=['is_superuser', 'is_staff'])
+        client = self.client_for(site_admin)
+        self.assertEqual(client.get('/api/users/').status_code, 403)
+        profile = client.get('/api/auth/me/')
+        self.assertEqual(profile.status_code, 200)
+        self.assertFalse(profile.data['is_super_admin'])
+        self.assertNotIn('is_superuser', profile.data)
 
 
 class Scenario03AdminAccess(RBACTestCase):
@@ -146,8 +336,17 @@ class Scenario03AdminAccess(RBACTestCase):
         client = self.client_for(self.admin)
         self.assertEqual(client.get('/api/users/').status_code, 200)
         res = client.post('/api/users/', {'email': 'x@test.com', 'username': 'x', 'password': PASSWORD}, format='json')
-        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.status_code, 405)
         self.assertEqual(client.post('/api/roles/', {'name': 'Auditor'}, format='json').status_code, 201)
+
+    def test_admin_can_assign_permissions_they_hold(self):
+        client = self.client_for(self.admin)
+        role = client.post('/api/roles/', {'name': 'Order Reviewer'}, format='json')
+        permission = Permission.objects.get(codename='orders_view')
+        res = client.post(f'/api/roles/{role.data["id"]}/assign_permissions/',
+                          {'permission_ids': [permission.id]}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(Role.objects.get(pk=role.data['id']).permissions.filter(pk=permission.pk).exists())
 
     def test_admin_cannot_manage_permissions_or_modules(self):
         client = self.client_for(self.admin)
@@ -161,9 +360,30 @@ class Scenario03AdminAccess(RBACTestCase):
         self.assertEqual(client.patch(f'/api/users/{sa}/', {'password': NEW_PASSWORD}, format='json').status_code, 403)
         self.assertEqual(client.post(f'/api/users/{sa}/toggle_active/').status_code, 403)
         self.assertEqual(client.post(f'/api/users/{sa}/assign_roles/', {'role_ids': []}, format='json').status_code, 403)
+        self.assertEqual(client.post(f'/api/users/{self.employee.id}/assign_roles/',
+                                     {'role_ids': [self.roles[Role.SUPER_ADMIN].id]}, format='json').status_code, 403)
         self.assertEqual(client.delete(f'/api/users/{sa}/').status_code, 403)
         self.superadmin.refresh_from_db()
         self.assertTrue(self.superadmin.is_active)
+
+    def test_user_search_filter_and_pagination(self):
+        client = self.client_for(self.superadmin)
+        for index in range(11):
+            User.objects.create_user(
+                email=f'list{index}@test.com', username=f'list{index}', password=None,
+                is_active=index % 2 == 0,
+            )
+
+        first_page = client.get('/api/users/?page=1')
+        second_page = client.get('/api/users/?page=2')
+        self.assertEqual(first_page.status_code, 200)
+        self.assertEqual(first_page.data['count'], 17)
+        self.assertEqual(len(first_page.data['results']), 10)
+        self.assertEqual(len(second_page.data['results']), 7)
+        self.assertEqual(client.get('/api/users/?search=customer').data['count'], 2)
+        self.assertEqual(client.get(f'/api/users/?roles={self.roles[Role.CUSTOMER].id}').data['count'], 2)
+        self.assertEqual(client.get('/api/users/?is_active=true').data['count'], 12)
+        self.assertEqual(client.get('/api/users/?is_active=false').data['count'], 5)
 
 
 class Scenario04ManagerTeamScope(RBACTestCase):
@@ -189,6 +409,22 @@ class Scenario04ManagerTeamScope(RBACTestCase):
         self.assertEqual(client.get('/api/roles/').status_code, 403)
         self.assertEqual(client.post(f'/api/users/{self.employee.id}/toggle_active/').status_code, 403)
 
+    def test_manager_audit_logs_are_limited_to_their_team(self):
+        content_type = ContentType.objects.get_for_model(User)
+        team_log = AuditLog.objects.create(
+            action=AuditLog.ACTION_UPDATE, actor=self.employee, content_type=content_type,
+            object_id=self.customer.id, object_repr='team customer',
+        )
+        outside_log = AuditLog.objects.create(
+            action=AuditLog.ACTION_UPDATE, actor=self.admin, content_type=content_type,
+            object_id=self.superadmin.id, object_repr='outside account',
+        )
+        response = self.client_for(self.manager).get('/api/auditlogs/')
+        self.assertEqual(response.status_code, 200)
+        visible_ids = {row['id'] for row in response.data['results']}
+        self.assertIn(team_log.id, visible_ids)
+        self.assertNotIn(outside_log.id, visible_ids)
+
 
 class Scenario05EmployeeAccess(RBACTestCase):
     def test_employee_permissions(self):
@@ -199,11 +435,24 @@ class Scenario05EmployeeAccess(RBACTestCase):
         self.assertEqual(client.delete(f'/api/products/{res.data["id"]}/').status_code, 403)
         self.assertEqual(client.get('/api/users/').status_code, 403)
         self.assertEqual(client.get('/api/reports/summary/').status_code, 403)
+        self.assertEqual(client.get('/api/auditlogs/').status_code, 403)
+        self.assertEqual(client.get('/api/roles/').status_code, 403)
 
     def test_employee_sees_only_own_orders(self):
         client = self.client_for(self.employee)
         self.assertEqual(client.get('/api/orders/').data['count'], 0)
         self.assertEqual(client.get(f'/api/orders/{self.order_c1.id}/').status_code, 404)
+
+    def test_product_edit_requires_products_edit(self):
+        employee = self.client_for(self.employee)
+        res = employee.patch(f'/api/products/{self.product.id}/', {'name': 'Updated laptop'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.name, 'Updated laptop')
+
+        customer = self.client_for(self.customer)
+        res = customer.patch(f'/api/products/{self.product.id}/', {'name': 'Unauthorized edit'}, format='json')
+        self.assertEqual(res.status_code, 403)
 
 
 class Scenario06CustomerRestricted(RBACTestCase):
@@ -233,7 +482,7 @@ class Scenario06CustomerRestricted(RBACTestCase):
         client = self.client_for(self.customer)
         ids = {o['id'] for o in client.get('/api/orders/').data['results']}
         self.assertEqual(ids, {self.order_c1.id})
-        # IDOR: someone else's order is invisible, not just forbidden
+
         self.assertEqual(client.get(f'/api/orders/{self.order_c2.id}/').status_code, 404)
         self.assertEqual(client.post(f'/api/orders/{self.order_c2.id}/cancel/').status_code, 404)
         self.assertEqual(client.post(f'/api/orders/{self.order_c1.id}/cancel/').status_code, 200)
@@ -338,17 +587,19 @@ class Scenario10ForgotResetPassword(RBACTestCase):
         self.assertEqual(res.status_code, 200)
         return res
 
-    def test_token_only_sent_by_email(self):
+    def test_otp_only_sent_by_email_and_hashed_in_cache(self):
         res = self.request_reset()
         self.assertNotIn('reset_token', res.data)
         self.assertNotIn('token', res.data)
+        self.assertNotIn('otp', res.data)
         self.assertEqual(len(mail.outbox), 1)
-        raw = re.search(r'token=([\w-]+)', mail.outbox[0].body).group(1)
-        self.assertNotIn(raw, str(res.data))
-        # Only a hash is stored in the DB
-        stored = OneTimeToken.objects.get(user=self.customer)
-        self.assertNotEqual(stored.token_hash, raw)
-        self.assertEqual(stored.token_hash, OneTimeToken.hash(raw))
+        otp = self._otp()
+        self.assertNotIn(otp, str(res.data))
+        stored = cache.get(password_reset_key(self.customer.email))
+        self.assertIsNotNone(stored)
+        self.assertNotEqual(stored['otp_hash'], otp)
+        self.assertEqual(stored['otp_hash'], _hash_otp_for_test(otp))
+        self.assertFalse(OneTimeToken.objects.filter(user=self.customer, purpose=OneTimeToken.PURPOSE_RESET).exists())
 
     def test_unknown_email_gives_same_response(self):
         known = self.request_reset().data
@@ -356,25 +607,72 @@ class Scenario10ForgotResetPassword(RBACTestCase):
         self.assertEqual(known, unknown)
         self.assertEqual(len(mail.outbox), 1)
 
+    @patch('accounts.views._send_otp_email', side_effect=RuntimeError('SMTP unavailable'))
+    def test_email_delivery_failure_does_not_reveal_account(self, send_email):
+        with self.assertLogs('accounts.views', level='ERROR'):
+            known = self.client.post('/api/auth/forgot-password/', {
+                'email': self.customer.email}, format='json')
+        unknown = self.client.post('/api/auth/forgot-password/', {
+            'email': 'nobody@test.com'}, format='json')
+        self.assertEqual(known.status_code, 200)
+        self.assertEqual(known.data, unknown.data)
+        self.assertEqual(send_email.call_count, 1)
+
     def test_reset_flow(self):
         old_session = self.client_for(self.customer)
         self.request_reset()
-        raw = re.search(r'token=([\w-]+)', mail.outbox[0].body).group(1)
+        otp = self._otp()
 
-        res = self.client.post('/api/auth/reset-password/', {'token': raw, 'new_password': 'password'}, format='json')
-        self.assertEqual(res.status_code, 400)  # validators run
+        res = self.client.post('/api/auth/reset-password/', {
+            'email': self.customer.email, 'otp': otp, 'new_password': 'password'}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.check_password(PASSWORD))
 
-        res = self.client.post('/api/auth/reset-password/', {'token': raw, 'new_password': NEW_PASSWORD}, format='json')
+        res = self.client.post('/api/auth/reset-password/', {
+            'email': self.customer.email, 'otp': self._wrong_otp(otp), 'new_password': NEW_PASSWORD}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.check_password(PASSWORD))
+
+        res = self.client.post('/api/auth/reset-password/', {
+            'email': self.customer.email, 'otp': otp, 'new_password': NEW_PASSWORD}, format='json')
         self.assertEqual(res.status_code, 200)
 
-        res = self.client.post('/api/auth/reset-password/', {'token': raw, 'new_password': NEW_PASSWORD}, format='json')
-        self.assertEqual(res.status_code, 400)  # single use
+        res = self.client.post('/api/auth/reset-password/', {
+            'email': self.customer.email, 'otp': otp, 'new_password': NEW_PASSWORD}, format='json')
+        self.assertEqual(res.status_code, 400)
 
         self.assertEqual(old_session.get('/api/auth/me/').status_code, 401)
         self.assertEqual(self.refresh(old_session.refresh).status_code, 401)
         self.assertEqual(self.login('customer@test.com', PASSWORD)[1].status_code, 401)
         self.assertEqual(self.login('customer@test.com', NEW_PASSWORD)[1].status_code, 200)
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.ACTION_PASSWORD_RESET).exists())
+
+    def test_reset_code_expires_and_is_deleted(self):
+        self.request_reset()
+        otp = self._otp()
+        challenge = cache.get(password_reset_key(self.customer.email))
+        challenge['expires_at'] = (timezone.now() - timedelta(seconds=5)).isoformat()
+        cache.set(password_reset_key(self.customer.email), challenge, timeout=60)
+
+        res = self.client.post('/api/auth/reset-password/', {
+            'email': self.customer.email, 'otp': otp, 'new_password': NEW_PASSWORD}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('expired', res.data['error'].lower())
+        self.assertIsNone(cache.get(password_reset_key(self.customer.email)))
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.check_password(PASSWORD))
+
+    def test_reset_code_locks_after_too_many_attempts(self):
+        correct_otp = begin_password_reset(self.customer.email)
+        wrong_otp = self._wrong_otp(correct_otp)
+        for _ in range(5):
+            with self.assertRaises(RegistrationRejected):
+                consume_password_reset(self.customer.email, wrong_otp)
+        self.assertIsNone(cache.get(password_reset_key(self.customer.email)))
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.check_password(PASSWORD))
 
     def test_forgot_password_is_throttled(self):
         for _ in range(5):
@@ -405,12 +703,11 @@ class Scenario11ChangePassword(RBACTestCase):
     def test_admin_password_update_is_hashed_and_validated(self):
         admin = self.client_for(self.admin)
         res = admin.patch(f'/api/users/{self.employee.id}/', {'password': '123'}, format='json')
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 403)
         res = admin.patch(f'/api/users/{self.employee.id}/', {'password': NEW_PASSWORD}, format='json')
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 403)
         self.employee.refresh_from_db()
-        self.assertNotEqual(self.employee.password, NEW_PASSWORD)
-        self.assertTrue(self.employee.check_password(NEW_PASSWORD))
+        self.assertTrue(self.employee.check_password(PASSWORD))
 
 
 class Scenario12PrivilegeEscalation(RBACTestCase):
@@ -428,10 +725,19 @@ class Scenario12PrivilegeEscalation(RBACTestCase):
                                                {'role_ids': [self.roles[Role.ADMIN].id]}, format='json')
         self.assertEqual(res.status_code, 403)
 
-    def test_only_super_admin_grants_super_admin(self):
+    def test_no_user_can_grant_super_admin_through_the_application(self):
         res = self.client_for(self.admin).post(f'/api/users/{self.employee.id}/assign_roles/',
                                                {'role_ids': [self.roles[Role.SUPER_ADMIN].id]}, format='json')
         self.assertEqual(res.status_code, 403)
+
+    def test_malformed_privilege_payloads_fail_with_client_errors(self):
+        sa = self.client_for(self.superadmin)
+        response = sa.post(f'/api/users/{self.employee.id}/assign_roles/',
+                           {'role_ids': [[self.roles[Role.ADMIN].id]]}, format='json')
+        self.assertEqual(response.status_code, 400)
+        response = sa.post(f'/api/roles/{self.roles[Role.ADMIN].id}/assign_permissions/',
+                           {'permission_ids': [[1]]}, format='json')
+        self.assertEqual(response.status_code, 400)
 
     def test_can_only_assign_roles_within_own_permissions(self):
         sa = self.client_for(self.superadmin)
@@ -447,6 +753,46 @@ class Scenario12PrivilegeEscalation(RBACTestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.ACTION_ASSIGN_ROLES, object_id=self.employee.id).exists())
 
+    def test_role_assignment_cannot_expand_actor_data_scope(self):
+        manager_role = self.roles[Role.MANAGER]
+        permission = Permission.objects.get(codename='user_management_assign')
+        manager_role.permissions.add(permission)
+        wide_role = Role.objects.create(name='Wide Product Reader', data_scope=Role.SCOPE_ALL)
+        wide_role.permissions.add(Permission.objects.get(codename='products_view'))
+        response = self.client_for(self.manager).post(
+            f'/api/users/{self.employee.id}/assign_roles/',
+            {'role_ids': [wide_role.id]}, format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(self.employee.roles.filter(pk=wide_role.pk).exists())
+
+    def test_actor_cannot_manage_a_user_with_wider_data_scope(self):
+        manager_role = self.roles[Role.MANAGER]
+        edit_permission = Permission.objects.get(codename='user_management_edit')
+        manager_role.permissions.add(edit_permission)
+        wider_role = Role.objects.create(name='Wide User Editor', data_scope=Role.SCOPE_ALL)
+        wider_role.permissions.add(edit_permission)
+        self.employee.roles.add(wider_role)
+        response = self.client_for(self.manager).patch(
+            f'/api/users/{self.employee.id}/', {'username': 'altered'}, format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.username, 'employee')
+
+    @patch('accounts.views._send_otp_email')
+    def test_managed_user_creation_cannot_assign_wider_data_scope(self, _send_email):
+        manager_role = self.roles[Role.MANAGER]
+        manager_role.permissions.add(Permission.objects.get(codename='user_management_create'))
+        wide_role = Role.objects.create(name='Wide Staff Reader', data_scope=Role.SCOPE_ALL)
+        wide_role.permissions.add(Permission.objects.get(codename='products_view'))
+        response = self.client_for(self.manager).post('/api/users/register_with_otp/', {
+            'email': 'wide-staff@test.com', 'username': 'widestaff', 'password': PASSWORD,
+            'role_ids': [wide_role.id],
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(email='wide-staff@test.com').exists())
+
     def test_can_only_grant_permissions_you_hold(self):
         admin = self.client_for(self.admin)
         role_id = admin.post('/api/roles/', {'name': 'Custom'}, format='json').data['id']
@@ -454,7 +800,7 @@ class Scenario12PrivilegeEscalation(RBACTestCase):
         res = admin.post(f'/api/roles/{role_id}/assign_permissions/', {'permission_ids': [perm.id]}, format='json')
         self.assertEqual(res.status_code, 403)
         res = admin.post('/api/roles/', {'name': 'Wide', 'data_scope': 'all'}, format='json')
-        self.assertEqual(res.status_code, 201)  # admin's own scope is 'all'
+        self.assertEqual(res.status_code, 201)
         res = self.client_for(self.superadmin).post('/api/roles/', {'name': 'X', 'data_scope': 'bogus'}, format='json')
         self.assertEqual(res.status_code, 400)
 
@@ -475,6 +821,88 @@ class Scenario12PrivilegeEscalation(RBACTestCase):
         view = SimpleNamespace(action='brand_new_action', permission_map={'list': 'x_view'})
         self.assertFalse(perm.has_permission(request, view))
         self.assertFalse(perm.has_permission(request, SimpleNamespace()))
+
+    def test_default_roles_editable_and_deletable_by_admin(self):
+
+        sa = self.client_for(self.superadmin)
+        manager_role = Role.objects.get(code=Role.MANAGER)
+        res = sa.patch(f'/api/roles/{manager_role.id}/', {'name': 'Operations Manager'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        manager_role.refresh_from_db()
+        self.assertEqual(manager_role.name, 'Operations Manager')
+
+
+        perm = Permission.objects.get(codename='products_create')
+        res = sa.post(f'/api/roles/{manager_role.id}/assign_permissions/',
+                      {'permission_ids': [perm.id]}, format='json')
+        self.assertEqual(res.status_code, 200)
+
+
+        customer_role = Role.objects.get(code=Role.CUSTOMER)
+        res = sa.delete(f'/api/roles/{customer_role.id}/')
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(Role.objects.filter(id=customer_role.id).exists())
+
+    def test_super_admin_role_cannot_be_deleted_even_by_super_admin(self):
+        sa = self.client_for(self.superadmin)
+        sa_role = Role.objects.get(code=Role.SUPER_ADMIN)
+        res = sa.delete(f'/api/roles/{sa_role.id}/')
+        self.assertEqual(res.status_code, 403)
+        self.assertTrue(Role.objects.filter(code=Role.SUPER_ADMIN).exists())
+
+    def test_critical_super_admin_permissions_cannot_be_removed(self):
+        sa = self.client_for(self.superadmin)
+        sa_role = Role.objects.get(code=Role.SUPER_ADMIN)
+
+        perm = Permission.objects.get(codename='products_view')
+        res = sa.post(f'/api/roles/{sa_role.id}/assign_permissions/',
+                      {'permission_ids': [perm.id]}, format='json')
+        self.assertEqual(res.status_code, 403)
+
+    def test_last_active_super_admin_cannot_be_deactivated_or_deleted(self):
+
+        sa = self.client_for(self.superadmin)
+        res = sa.post(f'/api/users/{self.superadmin.id}/toggle_active/')
+        self.assertEqual(res.status_code, 400)
+
+
+        res = sa.delete(f'/api/users/{self.superadmin.id}/')
+        self.assertEqual(res.status_code, 400)
+
+
+        sa2 = self.make_user('sa2@test.com', Role.SUPER_ADMIN)
+        sa2_client = self.client_for(sa2)
+
+
+        res = sa.post(f'/api/users/{sa2.id}/toggle_active/')
+        self.assertEqual(res.status_code, 200)
+        sa2.refresh_from_db()
+        self.assertFalse(sa2.is_active)
+
+
+        res = sa.delete(f'/api/users/{self.superadmin.id}/')
+        self.assertEqual(res.status_code, 400)
+
+
+        res = sa.post(f'/api/users/{self.superadmin.id}/assign_roles/',
+                      {'role_ids': [self.roles[Role.ADMIN].id]}, format='json')
+        self.assertEqual(res.status_code, 403)
+
+    def test_seed_command_preserves_administrator_changes(self):
+        sa = self.client_for(self.superadmin)
+        manager_role = Role.objects.get(code=Role.MANAGER)
+        sa.patch(f'/api/roles/{manager_role.id}/', {'name': 'Custom Lead'}, format='json')
+        perm = Permission.objects.get(codename='orders_export')
+        sa.post(f'/api/roles/{manager_role.id}/assign_permissions/', {'permission_ids': [perm.id]}, format='json')
+
+
+        seed_rbac()
+
+        manager_role.refresh_from_db()
+
+        self.assertEqual(manager_role.name, 'Custom Lead')
+
+        self.assertEqual(list(manager_role.permissions.values_list('codename', flat=True)), ['orders_export'])
 
 
 class AuditLogTests(RBACTestCase):

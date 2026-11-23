@@ -22,7 +22,7 @@ class HasModulePermission(BasePermission):
         if permission_map is not None:
             action = getattr(view, "action", None)
             if action is None:
-                # APIView-style handler on a mapped view: key by HTTP method.
+
                 action = request.method.lower()
             return permission_map.get(action)
         return getattr(view, "required_permission", None)
@@ -34,4 +34,6 @@ class HasModulePermission(BasePermission):
         required = self.get_required_permission(request, view)
         if not required:
             return False
+        if isinstance(required, (list, tuple, set)):
+            return any(has_permission(user, r) for r in required)
         return has_permission(user, required)

@@ -23,10 +23,6 @@ export default function MyProfile() {
                         <td>{user.email}</td>
                     </tr>
                     <tr>
-                        <th>Superuser?</th>
-                        <td>{user.is_superuser ? 'Yes (All Permissions Bypassed)' : 'No'}</td>
-                    </tr>
-                    <tr>
                         <th>Assigned Roles</th>
                         <td>{user.roles?.length > 0 ? user.roles.join(', ') : 'None'}</td>
                     </tr>

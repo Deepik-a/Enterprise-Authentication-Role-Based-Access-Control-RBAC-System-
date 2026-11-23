@@ -2,20 +2,20 @@ import axios from 'axios';
 
 export const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/';
 
-/*
- * Token storage
- * - Access token: kept in memory only (this module). Lost on page reload, then
- *   recovered by calling /auth/token/refresh/.
- * - Refresh token: an httpOnly cookie set by the backend. JavaScript can never
- *   read it, so an XSS bug can't steal a long-lived token.
- */
+
+
+
+
+
+
+
 let accessToken = null;
 export const setAccessToken = (token) => { accessToken = token; };
 export const getAccessToken = () => accessToken;
 
 const api = axios.create({
     baseURL: API_BASE,
-    withCredentials: true, // send the refresh cookie to /api/auth/*
+    withCredentials: true,
 });
 
 api.interceptors.request.use((config) => {
@@ -25,8 +25,8 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
-// One shared refresh request. Every 401 that arrives while a refresh is in
-// flight waits on the same promise instead of being rejected.
+
+
 let refreshPromise = null;
 
 export function refreshAccessToken() {
@@ -48,8 +48,9 @@ export function refreshAccessToken() {
     return refreshPromise;
 }
 
-const AUTH_PATHS = ['auth/login/', 'auth/token/refresh/', 'auth/register/', 'auth/forgot-password/',
-    'auth/reset-password/', 'auth/activate/', 'auth/resend-activation/'];
+const AUTH_PATHS = ['auth/login/', 'auth/token/refresh/', 'auth/register/', 'auth/verify-otp/',
+    'auth/resend-otp/', 'auth/forgot-password/', 'auth/reset-password/', 'auth/activate/',
+    'auth/resend-activation/'];
 
 api.interceptors.response.use(
     (response) => response,
@@ -82,7 +83,7 @@ api.interceptors.response.use(
     }
 );
 
-/** Turn a DRF error response into one readable line. */
+
 export function errorMessage(err, fallback = 'Something went wrong') {
     const data = err?.response?.data;
     if (!data) return err?.message || fallback;

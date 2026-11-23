@@ -64,7 +64,7 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'accounts.tokens.VersionedJWTAuthentication',
     ],
-    # Secure default: anything that doesn't declare otherwise needs a login.
+
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
@@ -76,6 +76,7 @@ REST_FRAMEWORK = {
         'register': env('THROTTLE_REGISTER', '10/hour'),
         'password_reset': env('THROTTLE_PASSWORD_RESET', '5/hour'),
         'activation': env('THROTTLE_ACTIVATION', '10/hour'),
+        'otp': env('THROTTLE_OTP', '30/hour'),
     },
 }
 
@@ -87,7 +88,7 @@ SIMPLE_JWT = {
     'UPDATE_LAST_LOGIN': True,
 }
 
-# The refresh token lives in an httpOnly cookie so JavaScript (and XSS) can't read it.
+
 REFRESH_COOKIE_NAME = 'refresh_token'
 REFRESH_COOKIE_PATH = '/api/auth/'
 REFRESH_COOKIE_SECURE = env_bool('REFRESH_COOKIE_SECURE', not DEBUG)
@@ -131,7 +132,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 
 
-# Database: PostgreSQL by default. DB_ENGINE=sqlite is only for quick local runs.
+
 DB_ENGINE = env('DB_ENGINE', 'postgresql')
 if DB_ENGINE == 'sqlite':
     DATABASES = {
@@ -170,13 +171,37 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-# CORS: only the known frontend origin(s). Credentials are needed for the refresh cookie.
+
 CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', 'http://localhost:3000')
 CORS_ALLOW_CREDENTIALS = True
 
 FRONTEND_URL = env('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
 
-# Email: the console backend prints emails (activation/reset links) to the runserver terminal.
+
+
+REDIS_URL = env('REDIS_URL', 'redis://127.0.0.1:6379/1')
+CACHE_BACKEND = env('CACHE_BACKEND', 'redis')
+if TESTING or CACHE_BACKEND == 'locmem':
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'enterprise-auth',
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+        }
+    }
+
+
+OTP_TTL_SECONDS = int(env('OTP_TTL_SECONDS', '600'))
+OTP_MAX_ATTEMPTS = int(env('OTP_MAX_ATTEMPTS', '5'))
+OTP_LENGTH = 6
+
+
 EMAIL_BACKEND = env('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', 'no-reply@enterprise-auth.local')
 EMAIL_HOST = env('EMAIL_HOST', 'localhost')

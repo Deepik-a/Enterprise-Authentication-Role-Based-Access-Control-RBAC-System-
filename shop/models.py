@@ -33,7 +33,7 @@ class Order(models.Model):
         (STATUS_CANCELLED, 'Cancelled'),
     ]
 
-    # Owner of the order. Always the user who placed it, never taken from the request body.
+
     customer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='orders')
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='orders')
     quantity = models.PositiveIntegerField(default=1, validators=[MinValueValidator(1)])

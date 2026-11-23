@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-/** Shows API 403/429 errors raised anywhere in the app (see api.js). */
+
 export default function ErrorBanner() {
     const [message, setMessage] = useState('');
 
