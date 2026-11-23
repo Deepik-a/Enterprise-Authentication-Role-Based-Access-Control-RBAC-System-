@@ -16,6 +16,7 @@ def run_password_validators(password, user):
 
 
 class RegisterSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(max_length=10)
     password = serializers.CharField(write_only=True)
 
     class Meta:

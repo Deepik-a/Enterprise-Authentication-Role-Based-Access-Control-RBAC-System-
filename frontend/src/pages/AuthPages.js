@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import api, { errorMessage } from '../api';
 import PasswordInput from '../components/PasswordInput';
+import { passwordPolicyError } from '../passwordValidation';
 
 export function AuthCard({ title, children }) {
     return (
@@ -79,10 +80,10 @@ export function ForgotPassword() {
                             value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))} />
                     </label>
                     <PasswordInput label="New password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password"
-                        error={password && password.length < 8 ? 'Password must be at least 8 characters.' : ''} />
+                        error={password ? passwordPolicyError(password) : ''} />
                     <PasswordInput label="Confirm new password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password"
                         error={confirm && password !== confirm ? 'Passwords do not match.' : ''} />
-                    <button className="btn" disabled={busy || otp.length !== 6 || password.length < 8 || password !== confirm}>Reset password</button>
+                    <button className="btn" disabled={busy || otp.length !== 6 || !!passwordPolicyError(password) || password !== confirm}>Reset password</button>
                 </form>
             ) : <p className="success">{message}</p>}
             <p><Link to="/login">Back to login</Link></p>

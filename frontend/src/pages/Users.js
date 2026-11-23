@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import api, { errorMessage } from '../api';
 import { useAuth } from '../AuthContext';
 import { useSweetAlert } from '../components/SweetAlert';
+import { passwordPolicyError, usernamePolicyError } from '../passwordValidation';
 
 export default function Users() {
     const [users, setUsers] = useState([]);
@@ -29,8 +30,8 @@ export default function Users() {
     const [showNewPassword, setShowNewPassword] = useState(false);
     const createErrors = {
         email: newUser.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newUser.email) ? 'Enter a valid email address.' : '',
-        username: newUser.username.trim().length < 3 ? 'Username must be at least 3 characters.' : '',
-        password: newUser.password.length < 8 ? 'Password must be at least 8 characters.' : '',
+        username: newUser.username ? usernamePolicyError(newUser.username) : 'Username is required.',
+        password: newUser.password ? passwordPolicyError(newUser.password) : 'Password is required.',
     };
     const { alert, confirm } = useSweetAlert();
 
@@ -289,16 +290,17 @@ export default function Users() {
                             <label>Username: </label>
                             <input
                                 value={newUser.username}
+                                maxLength={10}
                                 onChange={e => setNewUser({ ...newUser, username: e.target.value })}
                             />
-                            {newUser.username && createErrors.username && <span className="field-error">{createErrors.username}</span>}
+                            {createErrors.username && <span className="field-error">{createErrors.username}</span>}
                         </div>
                         <div>
                             <label>Password: </label>
                             <div className="password-input"><input type={showNewPassword ? 'text' : 'password'} value={newUser.password}
                                 onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
                                 <button type="button" onClick={() => setShowNewPassword(v => !v)}>{showNewPassword ? 'Hide' : 'Show'}</button></div>
-                            {newUser.password && createErrors.password && <span className="field-error">{createErrors.password}</span>}
+                            {createErrors.password && <span className="field-error">{createErrors.password}</span>}
                         </div>
 
                         <p><strong>Assign Initial Roles:</strong></p>
@@ -362,12 +364,13 @@ export default function Users() {
                             <label>Username: </label>
                             <input
                                 value={editUser.username}
+                                maxLength={10}
                                 onChange={e => setEditUser({ ...editUser, username: e.target.value })}
                             />
-                            {editUser.username.trim().length < 3 && <span className="field-error">Username must be at least 3 characters.</span>}
+                            {editUser.username && usernamePolicyError(editUser.username) && <span className="field-error">{usernamePolicyError(editUser.username)}</span>}
                         </div>
                         <div style={{ marginTop: 10 }}>
-                            <button type="submit" disabled={editUser.username.trim().length < 3}>Save Changes</button>
+                            <button type="submit" disabled={!!usernamePolicyError(editUser.username)}>Save Changes</button>
                             <button type="button" onClick={() => setEditUser(null)} style={{ marginLeft: 10 }}>Cancel</button>
                         </div>
                     </form>

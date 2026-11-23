@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { errorMessage } from '../api';
 import { useAuth } from '../AuthContext';
 import PasswordInput from '../components/PasswordInput';
+import { passwordPolicyError } from '../passwordValidation';
 
 export default function ChangePassword() {
     const { changePassword } = useAuth();
@@ -36,10 +37,10 @@ export default function ChangePassword() {
             <form onSubmit={submit} noValidate>
                 <PasswordInput label="Current password" value={form.old} onChange={update('old')} autoComplete="current-password" />
                 <PasswordInput label="New password" value={form.next} onChange={update('next')} autoComplete="new-password"
-                    error={form.next && form.next.length < 8 ? 'Use at least 8 characters.' : ''} />
+                    error={form.next ? passwordPolicyError(form.next) : ''} />
                 <PasswordInput label="Confirm new password" value={form.confirm} onChange={update('confirm')} autoComplete="new-password"
                     error={form.confirm && form.next !== form.confirm ? 'Passwords do not match.' : ''} />
-                <button className="btn" disabled={!form.old || form.next.length < 8 || form.next !== form.confirm}>Change password</button>
+                <button className="btn" disabled={!form.old || !!passwordPolicyError(form.next) || form.next !== form.confirm}>Change password</button>
             </form>
         </div>
     );

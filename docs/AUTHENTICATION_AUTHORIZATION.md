@@ -2,7 +2,7 @@
 
 ## Registration and email verification
 
-1. `POST /api/auth/register/` validates email, username, and password.
+1. `POST /api/auth/register/` validates email, username (3–10 characters), and password (at least 8 characters, including an uppercase letter and a special character), in addition to Django's configured checks.
 2. The registration payload and a one-way OTP digest are held in the configured cache for `OTP_TTL_SECONDS` (default 600 seconds). The password is hashed before caching; no user row is created yet.
 3. The six-digit OTP is sent by email. The API does not return the OTP.
 4. `POST /api/auth/verify-otp/` checks expiry and attempt limits, then creates the active, email-verified user and assigns the default Customer role. Managed user registration can specify permitted roles, but cannot grant Super Admin.

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import api, { errorMessage } from '../api';
 import { AuthCard } from './AuthPages';
 import PasswordInput from '../components/PasswordInput';
+import { passwordPolicyError, usernamePolicyError } from '../passwordValidation';
 
 export default function Register() {
     const [form, setForm] = useState({ email: '', username: '', password: '' });
@@ -19,8 +20,8 @@ export default function Register() {
         setForm({ ...form, [field]: value });
         const nextErrors = { ...liveErrors };
         if (field === 'email') nextErrors.email = value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? 'Enter a valid email address.' : '';
-        if (field === 'username') nextErrors.username = value.trim().length < 3 ? 'Username must be at least 3 characters.' : '';
-        if (field === 'password') nextErrors.password = value.length < 8 ? 'Password must be at least 8 characters.' : '';
+        if (field === 'username') nextErrors.username = usernamePolicyError(value);
+        if (field === 'password') nextErrors.password = passwordPolicyError(value);
         setLiveErrors(nextErrors);
         if (fieldErrors[field]) {
             setFieldErrors({ ...fieldErrors, [field]: null });
@@ -156,12 +157,14 @@ export default function Register() {
                     <label>Username
                         <input
                             value={form.username}
+                            maxLength={10}
                             onChange={update('username')}
                         />
                         {fieldErrors.username && <span className="error" style={{ display: 'block', marginTop: '4px', fontSize: '12px' }}>{fieldErrors.username}</span>}
                         {liveErrors.username && <span className="field-error">{liveErrors.username}</span>}
                     </label>
-                    <PasswordInput label="Password" value={form.password} onChange={update('password')} autoComplete="new-password" />
+                    <PasswordInput label="Password" value={form.password} onChange={update('password')} autoComplete="new-password"
+                        error={form.password ? passwordPolicyError(form.password) : ''} />
                     {fieldErrors.password && <span className="field-error">{fieldErrors.password}</span>}
                     {liveErrors.password && <span className="field-error">{liveErrors.password}</span>}
                     <p className="muted">At least 8 characters, not too common, not all numbers.</p>

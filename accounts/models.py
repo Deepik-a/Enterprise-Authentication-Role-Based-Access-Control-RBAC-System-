@@ -4,11 +4,18 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.db import models
 from django.utils import timezone
 
 
 class User(AbstractUser):
+    username = models.CharField(
+        max_length=10,
+        unique=True,
+        validators=[UnicodeUsernameValidator()],
+        error_messages={"unique": "A user with that username already exists."},
+    )
     email = models.EmailField(unique=True)
     is_active = models.BooleanField(default=True)
 
